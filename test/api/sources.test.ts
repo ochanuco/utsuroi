@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createSite } from '../../src/db';
+import { createSite, listAuditEventsBySubject } from '../../src/db';
 import { authHeaders, buildTestApp, db, jsonHeaders, testEnv, uniqueName } from './helpers';
 
 async function makeSite() {
@@ -116,5 +116,79 @@ describe('GET /api/sources', () => {
     const { app } = buildTestApp();
     const res = await app.request('/api/sources', { headers: authHeaders() }, testEnv());
     expect(res.status).toBe(400);
+  });
+});
+
+describe('DELETE /api/sources/:id (Site/Source/Monitor削除機能)', () => {
+  it('returns 404 for an unknown source id', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request('/api/sources/nope', { method: 'DELETE', headers: authHeaders() }, testEnv());
+    expect(res.status).toBe(404);
+    const body = await res.json() as any;
+    expect(body.error.code).toBe('source_not_found');
+  });
+
+  it('deletes a source with no monitors and records an audit event', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+    const created = await (
+      await app.request(
+        '/api/sources',
+        {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({ site_id: site.id, type: 'page', url: 'https://delete-source.example/' }),
+        },
+        testEnv()
+      )
+    ).json() as any;
+
+    const deleteRes = await app.request(
+      `/api/sources/${created.id}`,
+      { method: 'DELETE', headers: authHeaders() },
+      testEnv()
+    );
+    expect(deleteRes.status).toBe(200);
+
+    const getRes = await app.request(`/api/sources/${created.id}`, { headers: authHeaders() }, testEnv());
+    expect(getRes.status).toBe(404);
+
+    const events = await listAuditEventsBySubject(db(), created.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ action: 'source.delete', actor: 'admin', subject: created.id });
+  });
+
+  it('rejects deletion with 409 source_has_monitors when a monitor still references the source', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+    const source = await (
+      await app.request(
+        '/api/sources',
+        {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({ site_id: site.id, type: 'page', url: 'https://has-monitor.example/' }),
+        },
+        testEnv()
+      )
+    ).json() as any;
+    await app.request(
+      '/api/monitors',
+      { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ source_id: source.id, interval_seconds: 60 }) },
+      testEnv()
+    );
+
+    const res = await app.request(
+      `/api/sources/${source.id}`,
+      { method: 'DELETE', headers: authHeaders() },
+      testEnv()
+    );
+    expect(res.status).toBe(409);
+    const body = await res.json() as any;
+    expect(body.error.code).toBe('source_has_monitors');
+
+    // still present since deletion was rejected
+    const getRes = await app.request(`/api/sources/${source.id}`, { headers: authHeaders() }, testEnv());
+    expect(getRes.status).toBe(200);
   });
 });

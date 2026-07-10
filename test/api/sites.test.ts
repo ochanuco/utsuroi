@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createExecutor, createFetcher } from '../../src/db';
+import { createExecutor, createFetcher, listAuditEventsBySubject } from '../../src/db';
 import { authHeaders, buildTestApp, db, jsonHeaders, testEnv, uniqueName } from './helpers';
 
 async function makeFetchers() {
@@ -180,5 +180,69 @@ describe('PUT/GET /api/sites/:id/fetcher-policy', () => {
 
     const res = await app.request(`/api/sites/${site.id}/fetcher-policy`, { headers: authHeaders() }, testEnv());
     expect(res.status).toBe(404);
+  });
+});
+
+describe('DELETE /api/sites/:id (Site/Source/Monitor削除機能)', () => {
+  it('returns 404 for an unknown site id', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request('/api/sites/nope', { method: 'DELETE', headers: authHeaders() }, testEnv());
+    expect(res.status).toBe(404);
+    const body = await res.json() as any;
+    expect(body.error.code).toBe('site_not_found');
+  });
+
+  it('deletes a site with no sources and records an audit event', async () => {
+    const { app } = buildTestApp();
+    const created = await (
+      await app.request(
+        '/api/sites',
+        { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ name: uniqueName('Delete Site') }) },
+        testEnv()
+      )
+    ).json() as any;
+
+    const deleteRes = await app.request(
+      `/api/sites/${created.id}`,
+      { method: 'DELETE', headers: authHeaders() },
+      testEnv()
+    );
+    expect(deleteRes.status).toBe(200);
+
+    const getRes = await app.request(`/api/sites/${created.id}`, { headers: authHeaders() }, testEnv());
+    expect(getRes.status).toBe(404);
+
+    const events = await listAuditEventsBySubject(db(), created.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ action: 'site.delete', actor: 'admin', subject: created.id });
+  });
+
+  it('rejects deletion with 409 site_has_sources when a source still references the site', async () => {
+    const { app } = buildTestApp();
+    const site = await (
+      await app.request(
+        '/api/sites',
+        { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ name: uniqueName('Site With Source') }) },
+        testEnv()
+      )
+    ).json() as any;
+    await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ site_id: site.id, type: 'page', url: 'https://site-with-source.example/' }),
+      },
+      testEnv()
+    );
+
+    const res = await app.request(`/api/sites/${site.id}`, { method: 'DELETE', headers: authHeaders() }, testEnv());
+    expect(res.status).toBe(409);
+    const body = await res.json() as any;
+    expect(body.error.code).toBe('site_has_sources');
+
+    // still present since deletion was rejected
+    const getRes = await app.request(`/api/sites/${site.id}`, { headers: authHeaders() }, testEnv());
+    expect(getRes.status).toBe(200);
   });
 });
