@@ -18,6 +18,18 @@ describe('GET /api/snapshots/:id', () => {
     expect(res.status).toBe(401);
   });
 
+  it('rejects an invalid bearer token (401)', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request('/api/snapshots/nope', { headers: { authorization: 'Bearer wrong-token' } }, testEnv());
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects a malformed Authorization header (401)', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request('/api/snapshots/nope', { headers: { authorization: 'not-a-bearer-token' } }, testEnv());
+    expect(res.status).toBe(401);
+  });
+
   it('returns 404 for an unknown snapshot', async () => {
     const { app } = buildTestApp();
     const res = await app.request('/api/snapshots/nope', { headers: authHeaders() }, testEnv());
@@ -88,6 +100,18 @@ describe('GET /api/snapshots/:id/body', () => {
   it('requires auth (401)', async () => {
     const { app } = buildTestApp();
     const res = await app.request('/api/snapshots/nope/body', {}, testEnv());
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects an invalid bearer token (401)', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request('/api/snapshots/nope/body', { headers: { authorization: 'Bearer wrong-token' } }, testEnv());
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects a malformed Authorization header (401)', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request('/api/snapshots/nope/body', { headers: { authorization: 'not-a-bearer-token' } }, testEnv());
     expect(res.status).toBe(401);
   });
 

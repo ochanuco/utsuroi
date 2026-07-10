@@ -3,7 +3,7 @@
  */
 import { api } from '../api.js';
 import { registerRoute } from '../router.js';
-import { el, clear, section, field, formatDateTime, renderLoading, renderError, navigate } from '../util.js';
+import { el, clear, section, field, formatDateTime, renderLoading, renderError, navigate, truncationNotice } from '../util.js';
 
 function renderCreateForm(container, onCreated) {
   const nameInput = el('input', { attrs: { type: 'text', required: true, placeholder: '例: 自宅サーバー監視' } });
@@ -22,11 +22,17 @@ function renderCreateForm(container, onCreated) {
         if (origin) body.canonical_origins = [origin];
         try {
           await api.post('/sites', body);
-          nameInput.value = '';
-          originInput.value = '';
-          await onCreated();
         } catch (err) {
           errorEl.textContent = `作成に失敗しました: ${err.message}`;
+          errorEl.classList.remove('hidden');
+          return;
+        }
+        nameInput.value = '';
+        originInput.value = '';
+        try {
+          await onCreated();
+        } catch (err) {
+          errorEl.textContent = `一覧の更新に失敗しました（作成自体は成功しています）: ${err.message}`;
           errorEl.classList.remove('hidden');
         }
       },
@@ -82,6 +88,8 @@ async function renderList(container) {
   }
   table.appendChild(tbody);
   listSection.appendChild(table);
+  const notice = truncationNotice(data);
+  if (notice) listSection.appendChild(notice);
 }
 
 async function sitesView(container) {

@@ -73,8 +73,12 @@ async function boot() {
   try {
     await verifyToken();
     showApp();
-  } catch {
-    showGate('保存されたトークンが無効です。再入力してください。');
+  } catch (err) {
+    showGate(
+      err instanceof ApiError && err.status === 401
+        ? '保存されたトークンが無効です。再入力してください。'
+        : 'サーバーに接続できません。しばらくしてから再試行してください。'
+    );
   }
 }
 

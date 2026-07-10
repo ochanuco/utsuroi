@@ -14,7 +14,7 @@
   --success-bg: #16301f;
   --warning: #e0a83f;
   --warning-bg: #3a2c14;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --mono: ui-monospace, "SFMono-Regular", "Menlo", "Consolas", monospace;
 }
 
 * {
@@ -25,7 +25,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Hiragino Sans, "Noto Sans JP", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
   font-size: 14px;
   line-height: 1.6;
 }
@@ -315,13 +315,13 @@ pre.code-block {
   font-family: var(--mono);
   font-size: 12.5px;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .diff-line {
   display: block;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .diff-add {
   background: rgba(69, 193, 122, 0.15);

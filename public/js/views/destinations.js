@@ -3,7 +3,7 @@
  */
 import { api } from '../api.js';
 import { registerRoute } from '../router.js';
-import { el, clear, section, field, fieldRow, formatDateTime, renderLoading, renderError } from '../util.js';
+import { el, clear, section, field, fieldRow, formatDateTime, renderLoading, renderError, truncationNotice } from '../util.js';
 
 const KIND_OPTIONS = ['', 'new', 'updated', 'removed'];
 
@@ -54,6 +54,8 @@ async function renderSubscriptionsFor(container, destinationId, sites) {
     }
     table.appendChild(tbody);
     container.appendChild(table);
+    const notice = truncationNotice(data);
+    if (notice) container.appendChild(notice);
   } else {
     container.appendChild(el('p', { class: 'empty', text: '購読はまだありません。' }));
   }
@@ -84,12 +86,23 @@ async function renderSubscriptionsFor(container, destinationId, sites) {
             tag: tagInput.value.trim() || null,
             kind: kindSelect.value || null,
           });
-          monitorIdInput.value = '';
-          tagInput.value = '';
-          await renderSubscriptionsFor(container, destinationId, sites);
         } catch (err) {
           errorEl.textContent = `作成に失敗しました: ${err.message}`;
           errorEl.classList.remove('hidden');
+          return;
+        }
+        monitorIdInput.value = '';
+        tagInput.value = '';
+        try {
+          await renderSubscriptionsFor(container, destinationId, sites);
+        } catch (reloadErr) {
+          // 作成自体は成功しているため、一覧再取得の失敗は別扱いで表示する
+          // (renderSubscriptionsForは失敗時にcontainerをloading表示のまま残すため、
+          // ここで明示的にエラー表示へ差し替える)
+          clear(container);
+          container.appendChild(
+            el('p', { class: 'error', text: `一覧の更新に失敗しました（作成自体は成功しています）: ${reloadErr.message}` })
+          );
         }
       },
     },
@@ -150,6 +163,9 @@ async function renderDestinationsList(container, sites) {
       renderError(subsContainer, err);
     }
   }
+
+  const notice = truncationNotice(data);
+  if (notice) container.appendChild(notice);
 }
 
 async function destinationsView(container) {
@@ -169,11 +185,17 @@ async function destinationsView(container) {
         createError.classList.add('hidden');
         try {
           await api.post('/destinations', { name: nameInput.value.trim(), webhook_url: webhookInput.value.trim() });
-          nameInput.value = '';
-          webhookInput.value = '';
-          await reload();
         } catch (err) {
           createError.textContent = `作成に失敗しました: ${err.message}`;
+          createError.classList.remove('hidden');
+          return;
+        }
+        nameInput.value = '';
+        webhookInput.value = '';
+        try {
+          await renderDestinationsList(listContainer, sites);
+        } catch (err) {
+          createError.textContent = `一覧の更新に失敗しました（作成自体は成功しています）: ${err.message}`;
           createError.classList.remove('hidden');
         }
       },
