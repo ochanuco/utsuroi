@@ -1,18 +1,37 @@
-import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './shared/env';
 import type { NotifyQueueMessage } from './shared/contracts';
+import { createApp } from './api';
+import { createD1NotifyStore } from './db';
+import { processNotifyBatch } from './notify';
+import type { NotifyBatchMessage, NotifyMessageBatch } from './notify';
+import { runReconciliation } from './pipeline/reconcile';
 
-// Wave2 で実装が入る。スタブは wrangler / vitest-pool-workers の起動用。
-export class MonitorObject extends DurableObject<Env> {}
-export class HostObject extends DurableObject<Env> {}
+export { MonitorObject, monitorControlFactory } from './do/monitorObject';
+export { HostObject, hostLimiterFactory } from './do/hostObject';
+
+/** Cloudflare Queues の MessageBatch を notify バッチ層の最小 interface へ変換する薄いアダプタ */
+function toNotifyMessageBatch(batch: MessageBatch<NotifyQueueMessage>): NotifyMessageBatch {
+  return {
+    messages: batch.messages.map(
+      (msg): NotifyBatchMessage => ({
+        body: msg.body,
+        ack: () => msg.ack(),
+        retry: (retryOpts) => msg.retry(retryOpts),
+      }),
+    ),
+  };
+}
+
+const app = createApp();
+app.get('/', (c) => c.text('utsuroi: ok'));
 
 const handler = {
-  async fetch(_req: Request, _env: Env): Promise<Response> {
-    return new Response('utsuroi: ok');
+  fetch: (req: Request, env: Env, ctx: ExecutionContext) => app.fetch(req, env, ctx),
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    await runReconciliation(env);
   },
-  async scheduled(_controller: ScheduledController, _env: Env): Promise<void> {},
-  async queue(batch: MessageBatch<NotifyQueueMessage>, _env: Env): Promise<void> {
-    for (const msg of batch.messages) msg.ack();
+  async queue(batch: MessageBatch<NotifyQueueMessage>, env: Env): Promise<void> {
+    await processNotifyBatch(toNotifyMessageBatch(batch), createD1NotifyStore(env.DB));
   },
 } satisfies ExportedHandler<Env, NotifyQueueMessage>;
 
