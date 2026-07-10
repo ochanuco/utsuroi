@@ -24,11 +24,13 @@ function detectUtf16Bom(body: Uint8Array): 'utf-16le' | 'utf-16be' | null {
  * XML宣言の encoding を best-effort で読み取り、TextDecoder でデコードする。
  * 宣言が無い/デコーダが対応しない場合は UTF-8 にフォールバックする。
  *
- * UTF-16 LE/BE の BOM がある場合は、encoding宣言スニッフ (UTF-8前提でバイト列を読む) より
- * 先にそれを検出し、対応する TextDecoder で直接デコードする (BOM 無しの場合のみ、従来通り
- * UTF-8 でスニッフしてから宣言された encoding でデコードする)。
+ * 優先順位 (WHATWG のエンコーディング決定アルゴリズム準拠): UTF-16 BOM > HTTPヘッダ charset
+ * (headerCharset 引数) > XML宣言の encoding= スニッフ > UTF-8。
+ *
+ * UTF-16 LE/BE の BOM がある場合は、他のいずれよりも先にそれを検出し、対応する TextDecoder で
+ * 直接デコードする (BOM 無しの場合のみ、headerCharset → XML宣言スニッフの順で判定する)。
  */
-function decodeBody(body: Uint8Array): string {
+function decodeBody(body: Uint8Array, headerCharset?: string): string {
   const utf16Bom = detectUtf16Bom(body);
   if (utf16Bom) {
     try {
@@ -36,6 +38,18 @@ function decodeBody(body: Uint8Array): string {
     } catch {
       // デコーダが対応しない環境では UTF-8 フォールバックへ (通常ここには来ない想定)。
     }
+  }
+
+  const normalizedHeaderCharset = headerCharset?.trim().toLowerCase();
+  if (normalizedHeaderCharset && normalizedHeaderCharset !== 'utf-8' && normalizedHeaderCharset !== 'utf8') {
+    try {
+      return new TextDecoder(normalizedHeaderCharset, { fatal: false, ignoreBOM: false }).decode(body);
+    } catch {
+      // TextDecoder 非対応の label。XML宣言スニッフへフォールバックする。
+    }
+  } else if (normalizedHeaderCharset) {
+    // ヘッダが明示的に utf-8 を宣言している場合はそれを信頼し、XML宣言スニッフを介さず直接デコードする。
+    return new TextDecoder('utf-8', { fatal: false, ignoreBOM: false }).decode(body);
   }
 
   let encoding = 'utf-8';
@@ -61,9 +75,12 @@ function decodeBody(body: Uint8Array): string {
 /**
  * バイト列を decode + XML妥当性検証 + パースし、プレーンオブジェクトへ変換する。
  * 不正なXMLは throw せず AdapterParseError('invalid_xml') を投げる。
+ *
+ * headerCharset: HTTP レスポンスの Content-Type ヘッダから抽出した charset。
+ * 指定時は XML宣言の encoding= スニッフより優先される (decodeBody 参照)。
  */
-export function parseXmlDocument(body: Uint8Array): Record<string, unknown> {
-  const xml = decodeBody(body);
+export function parseXmlDocument(body: Uint8Array, headerCharset?: string): Record<string, unknown> {
+  const xml = decodeBody(body, headerCharset);
 
   const validation = XMLValidator.validate(xml, { allowBooleanAttributes: true });
   if (validation !== true) {

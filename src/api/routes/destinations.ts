@@ -6,10 +6,11 @@ import { z } from 'zod';
 import type { Env } from '../../shared/env';
 import { createDestination, encryptWebhookUrl, getDestination, listDestinations } from '../../db';
 import { checkUrlForSsrf } from '../../net';
-import { badRequest, notFound, serviceUnavailable } from '../errors';
+import { isDiscordWebhookHost } from '../../notify/discord';
+import { badRequest, conflict, notFound, serviceUnavailable } from '../errors';
 import { maskWebhookUrl } from '../mask';
 import { paginate, parsePagination, parseWith, readJsonBody } from '../http';
-import { deleteDestinationById } from '../rawQueries';
+import { deleteDestinationById, isForeignKeyConstraintError } from '../rawQueries';
 import { serializeDestination } from '../serialize';
 
 const createDestinationSchema = z.object({
@@ -31,6 +32,15 @@ function assertValidWebhookUrl(url: string): void {
   const ssrf = checkUrlForSsrf(url);
   if (!ssrf.allowed) {
     throw badRequest('invalid_webhook_url', `webhook_url rejected by url safety policy: ${ssrf.reason ?? 'unknown'}`);
+  }
+  // Discord の既知ドメインへ限定する (DNS rebinding への回答。src/notify/discord.ts の
+  // isDiscordWebhookHost 側のコメント参照)。登録時 (ここ) と送信直前 (sendToDiscord) の
+  // 両方に同じ allowlist を適用し、単一の実装 (isDiscordWebhookHost) を共有する。
+  if (!isDiscordWebhookHost(parsed.hostname)) {
+    throw badRequest(
+      'invalid_webhook_url',
+      'webhook_url must be a Discord webhook endpoint (discord.com / discordapp.com)',
+    );
   }
 }
 
@@ -76,7 +86,20 @@ export function destinationsRoutes() {
     const destination = await getDestination(c.env.DB, id);
     if (!destination) throw notFound('destination_not_found', 'destination not found');
 
-    await deleteDestinationById(c.env.DB, id);
+    // deleteDestinationById は従属 subscriptions を同時に削除するが、deliveries は配送履歴
+    // として意図的に残す (src/api/rawQueries.ts 参照)。delivery 履歴が残っている destination は
+    // FOREIGN KEY 制約違反として削除が拒否されるため、ここで 409 Conflict に変換する。
+    try {
+      await deleteDestinationById(c.env.DB, id);
+    } catch (err) {
+      if (isForeignKeyConstraintError(err)) {
+        throw conflict(
+          'destination_has_delivery_history',
+          'cannot delete a destination that still has delivery history',
+        );
+      }
+      throw err;
+    }
     return c.json({ deleted: true });
   });
 

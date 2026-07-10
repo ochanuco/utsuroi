@@ -1,7 +1,7 @@
 /**
  * page Source の内容処理 (SPEC §12, §13): 正規化 → R2保存 → 前回Snapshotとの比較 → 差分 → Change。
  */
-import { normalizeHtml, diffText, compareSnapshots } from '../normalize';
+import { normalizeHtml, diffText, compareSnapshots, extractCharsetFromContentType } from '../normalize';
 import type { FetchSuccess, NormalizedContent } from '../shared/contracts';
 import {
   createSnapshot,
@@ -43,12 +43,16 @@ export async function processPageContent(
   body: Uint8Array,
 ): Promise<void> {
   const config = await loadSourceConfig(ctx.db, ctx.source.id);
-  const normalized = await normalizeHtml(body, {
-    baseUrl: target.url,
-    ignoreSelectors: config.ignoreSelectors,
-    includeSelectors: config.includeSelectors,
-    stripQueryParams: config.stripQueryParams,
-  });
+  const normalized = await normalizeHtml(
+    body,
+    {
+      baseUrl: target.url,
+      ignoreSelectors: config.ignoreSelectors,
+      includeSelectors: config.includeSelectors,
+      stripQueryParams: config.stripQueryParams,
+    },
+    { headerCharset: extractCharsetFromContentType(outcome.contentType) },
+  );
 
   await putIfAbsent(ctx.env.BODIES, bodyKey(normalized.rawHash), body);
   await putIfAbsent(ctx.env.BODIES, normalizedKey(normalized.textHash), normalized.extractedText);
@@ -96,12 +100,11 @@ export async function processPageContent(
 
   const changeId = crypto.randomUUID();
   const dedupeKey = cmp.level === 'text_hash' ? normalized.textHash : normalized.normalizedHash;
-
-  let diffR2Key: string | null = null;
-  if (diff.unifiedDiff) {
-    diffR2Key = diffKey(changeId);
-    await ctx.env.BODIES.put(diffR2Key, diff.unifiedDiff);
-  }
+  // diffR2Key は changeId から決定論的に導出できるキーであり、この時点ではまだ R2 に書き込まない。
+  // insertChangeIfNew (dedupeKey での冪等 insert) が実際に新規行を作った場合のみ、後段で R2 へ put する。
+  // 先に put してしまうと dedupeKey 重複 (inserted.inserted===false) のケースで、どの Change 行からも
+  // 参照されない孤児 diff オブジェクトが R2 に残ってしまう。
+  const diffR2Key = diff.unifiedDiff ? diffKey(changeId) : null;
 
   const inserted = await insertChangeIfNew(ctx.db, {
     id: changeId,
@@ -117,6 +120,10 @@ export async function processPageContent(
     diffPreview: diff.unifiedDiff ? truncateDiffPreview(diff.unifiedDiff) : null,
     detectedAt: fetchedAtIso,
   });
+
+  if (inserted.inserted && diffR2Key) {
+    await ctx.env.BODIES.put(diffR2Key, diff.unifiedDiff);
+  }
 
   // inserted.inserted が false (dedupeKey 重複) でも、前回実行が Change 挿入後・delivery/enqueue 前に
   // クラッシュした可能性があるため、配送は常に inserted.row に対して行う (at-least-once 復旧)。

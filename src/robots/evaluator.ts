@@ -13,24 +13,56 @@ export interface EvaluateRobotsResult {
   matchedRule: string | null;
 }
 
-/** パターン中の regex 特殊文字をエスケープ ('*' はワイルドカードとして残す) */
-function escapeForRegex(ch: string): string {
-  return /[.+?^${}()|[\]\\]/.test(ch) ? `\\${ch}` : ch;
-}
+/**
+ * '*' ワイルドカードのみを解釈する glob の完全一致判定 (two-pointer, 線形時間)。
+ * 正規表現ベース (旧実装) は細工された robots.txt パターン (例: 複数の '*' が連続/重複する
+ * パターンと、それにマッチしにくい入力の組み合わせ) によって指数関数的なバックトラッキングを
+ * 誘発されうる (ReDoS)。本実装はバックトラッキング正規表現エンジンを使わず、'*' の直近出現位置
+ * だけを記憶して再試行する古典的アルゴリズム (LeetCode 44 と同種) のため、最悪でも
+ * O(pattern.length * text.length) の多項式時間で確定し、入力に対して指数的に悪化しない。
+ */
+function globFullMatch(pattern: string, text: string): boolean {
+  let pIdx = 0;
+  let tIdx = 0;
+  let starIdx = -1;
+  let matchIdx = 0;
 
-function patternToRegex(pattern: string): RegExp {
-  const hasEnd = pattern.endsWith('$');
-  const body = hasEnd ? pattern.slice(0, -1) : pattern;
-  let source = '';
-  for (const ch of body) {
-    source += ch === '*' ? '.*' : escapeForRegex(ch);
+  while (tIdx < text.length) {
+    if (pIdx < pattern.length && (pattern[pIdx] === '*' || pattern[pIdx] === text[tIdx])) {
+      if (pattern[pIdx] === '*') {
+        starIdx = pIdx;
+        matchIdx = tIdx;
+        pIdx += 1;
+      } else {
+        pIdx += 1;
+        tIdx += 1;
+      }
+    } else if (starIdx !== -1) {
+      // 直近の '*' がもう1文字多く消費するとみなして再試行する。
+      pIdx = starIdx + 1;
+      matchIdx += 1;
+      tIdx = matchIdx;
+    } else {
+      return false;
+    }
   }
-  return new RegExp(`^${source}${hasEnd ? '$' : ''}`);
+
+  // 残りが '*' だけなら (0文字消費として) 一致とみなす。
+  while (pIdx < pattern.length && pattern[pIdx] === '*') pIdx += 1;
+  return pIdx === pattern.length;
 }
 
+/**
+ * robots.txt の pattern 意味論: '*' は任意長 (0文字含む) の任意文字列に一致し、末尾 '$' は
+ * 「path の末尾までで完全一致」を意味する。'$' が無ければ prefix 一致 (path の残りは任意) を
+ * 意味するため、内部的には pattern の末尾に暗黙の '*' を1つ足した上で globFullMatch (完全一致)
+ * を行うことで prefix 一致を表現する。
+ */
 function matchesPattern(pattern: string, path: string): boolean {
   if (pattern === '') return true; // 空パターンは常に一致 (allow: 空 相当。到達しても実害なし)
-  return patternToRegex(pattern).test(path);
+  const hasEnd = pattern.endsWith('$');
+  const body = hasEnd ? pattern.slice(0, -1) : `${pattern}*`;
+  return globFullMatch(body, path);
 }
 
 /**

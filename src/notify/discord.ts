@@ -8,6 +8,27 @@ import { checkUrlForSsrf } from '../net';
 /** SSRF ポリシーで拒否された webhook URL への送信を表す合成ステータス (実HTTPレスポンスではない) */
 const SSRF_BLOCKED_STATUS = 400;
 
+/**
+ * Discord Webhook として許可するホスト名 (末尾一致、大文字小文字を無視)。
+ * discord.com / *.discord.com (canary.discord.com 等) および 旧ドメインの
+ * discordapp.com / *.discordapp.com を許可する。
+ *
+ * 設計判断 (DNS rebinding への回答, report 参照): webhook 送信は登録時・送信直前の
+ * 両方で checkUrlForSsrf (静的検査) に加えこの allowlist を適用する。resolveAndCheck
+ * (DoH による実解決検査) は送信のたびに追加の外部DNSクエリを発生させるコストに見合わないと
+ * 判断し採用しない。ホスト名を Discord の既知ドメインへ厳格に限定することで、SSRF対象が
+ * 「Discordの正規ドメイン」以外にはそもそも解決され得ない (=DNS rebindingで内部IPに
+ * 誘導できても、その宛先が Discord ドメインでなければこのチェックで拒否される) ため、
+ * allowlist 自体がDNS rebindingへの十分な対策になる。
+ */
+const DISCORD_WEBHOOK_HOSTS: readonly string[] = ['discord.com', 'discordapp.com'];
+
+/** hostname が Discord Webhook の想定ホスト (discord.com / *.discord.com / discordapp.com 系) か判定する */
+export function isDiscordWebhookHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return DISCORD_WEBHOOK_HOSTS.some((base) => host === base || host.endsWith(`.${base}`));
+}
+
 /** diffPreview を code block へ収める際の目標上限文字数 */
 const DIFF_PREVIEW_MAX_CHARS = 900;
 
@@ -129,6 +150,28 @@ export async function sendToDiscord(
       status: SSRF_BLOCKED_STATUS,
       retryAfterSeconds: null,
       message: 'discord webhook delivery failed: webhook url blocked by url safety policy',
+    };
+  }
+
+  // ホスト名を Discord の既知ドメインへ限定する (DNS rebinding への回答、上記コメント参照)。
+  // registration 時 (destinations ルート) の検査に加え、送信直前にも必ず適用する。
+  let hostname: string;
+  try {
+    hostname = new URL(webhookUrl).hostname;
+  } catch {
+    return {
+      ok: false,
+      status: SSRF_BLOCKED_STATUS,
+      retryAfterSeconds: null,
+      message: 'discord webhook delivery failed: invalid webhook url',
+    };
+  }
+  if (!isDiscordWebhookHost(hostname)) {
+    return {
+      ok: false,
+      status: SSRF_BLOCKED_STATUS,
+      retryAfterSeconds: null,
+      message: 'discord webhook delivery failed: webhook url host is not an allowed discord domain',
     };
   }
 

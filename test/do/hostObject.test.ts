@@ -107,6 +107,79 @@ describe('HostObject (SPEC §11: per-origin rate limit / lease / backoff / circu
     expect(tooSoon.granted).toBe(false);
   });
 
+  describe('half-open circuit breaker probe', () => {
+    async function tripBreaker(stub: DurableObjectStub<HostObject>, startT: number): Promise<number> {
+      let t = startT;
+      for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD; i++) {
+        if (i > 0) t += 10 * 60_000;
+        await withClock(stub, t);
+        const lease = await stub.acquireLease();
+        expect(lease.granted).toBe(true);
+        await stub.releaseLease(lease.leaseId!, { failureClass: 'http_5xx', retryAfterSeconds: null });
+      }
+      return t;
+    }
+
+    it('allows only a single probe lease while half-open, rejecting additional acquires', async () => {
+      const stub = getStub('https://half-open-single-probe.example');
+      let t = 5_000_000;
+      t = await tripBreaker(stub, t);
+
+      t += CIRCUIT_OPEN_MS + 1;
+      await withClock(stub, t);
+      const probe = await stub.acquireLease();
+      expect(probe.granted).toBe(true);
+
+      // While the probe is still outstanding (not yet released), a second acquire must be
+      // rejected regardless of MAX_CONCURRENT_LEASES (half-open允许 exactly one probe).
+      const second = await stub.acquireLease();
+      expect(second.granted).toBe(false);
+    });
+
+    it('closes the breaker (returns to normal operation) when the probe succeeds', async () => {
+      const stub = getStub('https://half-open-success.example');
+      let t = 6_000_000;
+      t = await tripBreaker(stub, t);
+
+      t += CIRCUIT_OPEN_MS + 1;
+      await withClock(stub, t);
+      const probe = await stub.acquireLease();
+      expect(probe.granted).toBe(true);
+      await stub.releaseLease(probe.leaseId!, { failureClass: null, retryAfterSeconds: null });
+
+      // Breaker is closed now: a normal acquire (after the min access interval) should succeed,
+      // and a second concurrent acquire (up to MAX_CONCURRENT_LEASES) should also succeed.
+      t += MIN_ACCESS_INTERVAL_MS;
+      await withClock(stub, t);
+      const afterProbe = await stub.acquireLease();
+      expect(afterProbe.granted).toBe(true);
+    });
+
+    it('reopens the breaker for a full CIRCUIT_OPEN_MS window when the probe fails', async () => {
+      const stub = getStub('https://half-open-failure.example');
+      let t = 7_000_000;
+      t = await tripBreaker(stub, t);
+
+      t += CIRCUIT_OPEN_MS + 1;
+      await withClock(stub, t);
+      const probe = await stub.acquireLease();
+      expect(probe.granted).toBe(true);
+      await stub.releaseLease(probe.leaseId!, { failureClass: 'http_5xx', retryAfterSeconds: null });
+
+      // Immediately after the failed probe, the breaker should be open again.
+      await withClock(stub, t);
+      const blockedAgain = await stub.acquireLease();
+      expect(blockedAgain.granted).toBe(false);
+      expect(blockedAgain.retryAfterMs).toBeGreaterThan(0);
+
+      // A second probe becomes available only after another full CIRCUIT_OPEN_MS window.
+      t += CIRCUIT_OPEN_MS + 1;
+      await withClock(stub, t);
+      const secondProbe = await stub.acquireLease();
+      expect(secondProbe.granted).toBe(true);
+    });
+  });
+
   it('respects Retry-After on http_429 even when it exceeds the computed backoff', async () => {
     const stub = getStub('https://retryafter.example');
     let t = 4_000_000;

@@ -73,6 +73,12 @@ describe('normalizeHtml', () => {
     expect(result.normalizedHtml).toContain('keep=1');
   });
 
+  it('decodes uppercase hex numeric entities (&#X41;) in href/src attribute values', async () => {
+    const html = `<html><body><a href="https://example.com/x?y=&#X41;&#x42;">link</a></body></html>`;
+    const result = await normalizeHtml(toBytes(html), { baseUrl });
+    expect(result.normalizedHtml).toContain('y=AB');
+  });
+
   it('supports overriding stripQueryParams', async () => {
     const html = `<html><body><a href="https://example.com/x?keep_me=1&amp;drop_me=2">link</a></body></html>`;
     const result = await normalizeHtml(toBytes(html), {
@@ -172,7 +178,36 @@ describe('normalizeHtml', () => {
     expect(result.rawHash).toMatch(/^[0-9a-f]{64}$/);
     expect(result.normalizedHash).toMatch(/^[0-9a-f]{64}$/);
     expect(result.textHash).toMatch(/^[0-9a-f]{64}$/);
-    expect(result.normalizationVersion).toBe(1);
+    expect(result.normalizationVersion).toBe(2);
+  });
+
+  it('preserves a meaningful single space between inline elements (does not collapse to zero)', async () => {
+    const html = `<html><body><p><span>A</span> <span>B</span></p></body></html>`;
+    const result = await normalizeHtml(toBytes(html), { baseUrl });
+    expect(result.normalizedHtml).toContain('<span>A</span> <span>B</span>');
+  });
+
+  it('still strips pretty-print indentation whitespace (containing a newline) between tags', async () => {
+    const html = `<html><body>\n      <p>Hello</p>\n      <p>World</p>\n    </body></html>`;
+    const result = await normalizeHtml(toBytes(html), { baseUrl });
+    expect(result.normalizedHtml).toBe('<html><body><p>Hello</p><p>World</p></body></html>');
+  });
+
+  it('decodes non-UTF-8 bytes via the HTTP header charset (extra 3rd arg) when there is no meta charset', async () => {
+    // Shift_JIS encoded 'こんにちは', but with no <meta charset> at all -- only the
+    // HTTP Content-Type header (threaded through normalizeHtml's normalize-module-local
+    // 3rd argument, not NormalizeOptions) carries the charset.
+    const text = 'こんにちは';
+    const sjisBytes = encodeShiftJisBestEffort(text);
+    const htmlHead = `<html><head></head><body><p>`;
+    const htmlTail = `</p></body></html>`;
+    const full = new Uint8Array([
+      ...new TextEncoder().encode(htmlHead),
+      ...sjisBytes,
+      ...new TextEncoder().encode(htmlTail),
+    ]);
+    const result = await normalizeHtml(full, { baseUrl }, { headerCharset: 'Shift_JIS' });
+    expect(result.extractedText).toBe(text);
   });
 
   it('decodes non-UTF-8 bytes declared via meta charset (best effort)', async () => {

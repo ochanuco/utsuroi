@@ -1,7 +1,13 @@
 /**
  * normalizedHtml 用の空白・改行正規化。
- * - 連続する空白文字 (改行・タブ含む) を半角スペース1つに圧縮する。
- * - タグ間 (`>` と `<` の間) の空白 (プリティプリント由来のインデント等) を除去する。
+ * - タグ間 (`>` と `<` の間) の空白のうち、改行を含むもの (プリティプリント由来のインデント等)
+ *   だけを完全に除去する。改行を含まない単純な空白 (`<span>A</span> <span>B</span>` の
+ *   間の1個のスペースなど) はインライン要素間で意味を持ちうる (レンダリング結果が
+ *   "A B" と "AB" で異なる) ため保持する。
+ * - 上記の判定は元の空白に改行が含まれていたかどうかに依存するため、必ず一般の空白圧縮より
+ *   先に行う (先に改行を含む空白を全て半角スペース1つへ圧縮してしまうと、この判定に必要な
+ *   情報が失われるため)。
+ * - 残った連続する空白文字 (改行・タブ含む) は半角スペース1つに圧縮する。
  * - 先頭・末尾の空白をトリムする。
  *
  * 既知の制約: `>` の直後に空白、その後に `<` が続くパターンを属性値の内部と区別しない
@@ -9,9 +15,9 @@
  * タグ間トリムの対象になり得る。ベストエフォートとして許容する。
  */
 export function collapseHtmlWhitespace(html: string): string {
-  const collapsed = html.replace(/[ \t\r\n\f]+/g, ' ');
-  const trimmedBetweenTags = collapsed.replace(/>\s+</g, '><');
-  return trimmedBetweenTags.trim();
+  const withoutIndentGaps = html.replace(/>[ \t\r\n\f]*[\r\n][ \t\r\n\f]*</g, '><');
+  const collapsed = withoutIndentGaps.replace(/[ \t\r\n\f]+/g, ' ');
+  return collapsed.trim();
 }
 
 /**

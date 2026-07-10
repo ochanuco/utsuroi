@@ -176,6 +176,23 @@ describe('sendToDiscord', () => {
     }
   });
 
+  it('rejects a webhook host that is not a Discord domain, even when the SSRF policy would allow it', async () => {
+    let fetchCalled = false;
+    const fetchStub = async () => {
+      fetchCalled = true;
+      return new Response(null, { status: 204 });
+    };
+
+    const result = await sendToDiscord('https://evil.example.com/webhook', {}, { fetch: fetchStub });
+
+    expect(fetchCalled).toBe(false);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.status).not.toBeNull();
+      expect(result.message).not.toContain('evil.example.com');
+    }
+  });
+
   it('revalidates the webhook URL against the SSRF policy immediately before sending', async () => {
     let fetchCalled = false;
     const fetchStub = async () => {

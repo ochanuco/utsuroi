@@ -2,7 +2,7 @@
  * 正規化ロジックの版。正規化アルゴリズムに影響する変更を行った場合はインクリメントする。
  * NormalizedContent.normalizationVersion に格納される。
  */
-export const NORMALIZATION_VERSION = 1;
+export const NORMALIZATION_VERSION = 2;
 
 /**
  * tracking query パラメータの既定除去リスト。

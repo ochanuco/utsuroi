@@ -60,7 +60,7 @@ export async function fetchTargetThroughPolicy(
       attemptIndex: index,
       outcome: outcome.ok ? 'success' : 'failure',
       failureClass: outcome.ok ? null : outcome.failureClass,
-      statusCode: outcome.ok ? outcome.status : outcome.status,
+      statusCode: outcome.status,
       durationMs: outcome.ok ? outcome.durationMs : null,
       errorMessage: outcome.ok ? null : outcome.message,
     });

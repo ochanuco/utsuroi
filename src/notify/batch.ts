@@ -101,8 +101,12 @@ export async function processNotifyBatch(
       await processOne(message, store, opts);
     } catch (err) {
       // 想定外の例外 (store 側の障害等)。メッセージを失わないよう再配送に回す。
-      // webhook URL を含みうる詳細はここでは持たないため、そのまま握りつぶしてよい。
-      void err;
+      // deliveryId のみを含む構造化ログを残す (webhook URL はこの時点で持っていないため
+      // 漏えいの心配は無いが、念のためエラーオブジェクト全体ではなく message のみを載せる)。
+      console.error('notify batch: unexpected error while processing delivery', {
+        deliveryId: message.body.deliveryId,
+        error: err instanceof Error ? err.message : String(err),
+      });
       try {
         message.retry();
       } catch {

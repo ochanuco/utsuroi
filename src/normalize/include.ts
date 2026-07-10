@@ -13,8 +13,13 @@
  * 対応するため、深さカウンタで開始/終了を追跡し、深さ > 0 の区間のみを採用する
  * (マーカー自体は結果に含めない)。
  */
+/** RegExp の特殊文字をエスケープする (token を正規表現リテラルとして安全に埋め込むため) */
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export function extractIncludedRegions(html: string, token: string): string {
-  const markerRe = new RegExp(`<!--utsuroi:include-(start|end):${token}-->`, 'g');
+  const markerRe = new RegExp(`<!--utsuroi:include-(start|end):${escapeRegExp(token)}-->`, 'g');
 
   let depth = 0;
   let result = '';

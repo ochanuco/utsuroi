@@ -65,6 +65,13 @@ export function normalizeRfc822Date(raw: string): string | null {
   const minute = parseInt(minStr, 10);
   const second = secStr ? parseInt(secStr, 10) : 0;
 
+  // Date.UTC は範囲外の値 (例: 32日、25時) を暗黙にロールオーバーして次の月/日に丸めてしまう
+  // ため、それより前に明示的に範囲検証する。範囲外なら「厳密なRFC822として解釈できない」
+  // ケースとして Date の一般パースへフォールバックする。
+  if (day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) {
+    return fallbackParse(s);
+  }
+
   let offsetMinutes = 0;
   if (zoneStr) {
     if (/^[+-]\d{4}$/.test(zoneStr)) {

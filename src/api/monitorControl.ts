@@ -9,16 +9,10 @@
  * この既定実装は型レベルの整合性確認のみを目的とする。
  */
 import type { Env } from '../shared/env';
-import type { MonitorControl, MonitorControlFactory, MonitorControlStatus } from '../shared/contracts';
+import type { MonitorControl, MonitorControlFactory, MonitorDoRpc } from '../shared/contracts';
 
-/** MonitorObject DO が公開する (予定の) RPC メソッド群の固定シグネチャ */
-export interface MonitorDoRpc {
-  scheduleMonitor(monitorId: string, nextRunAt: string | null): Promise<void>;
-  runNowMonitor(monitorId: string): Promise<{ started: boolean; reason: string | null }>;
-  pauseMonitor(monitorId: string): Promise<void>;
-  resumeMonitor(monitorId: string): Promise<void>;
-  getMonitorStatus(monitorId: string): Promise<MonitorControlStatus>;
-}
+/** MonitorObject DO の RPC 契約は src/shared/contracts.ts の単一定義を再利用する (重複定義しない) */
+export type { MonitorDoRpc } from '../shared/contracts';
 
 export function createDefaultMonitorControlFactory(env: Env): MonitorControlFactory {
   return (monitorId: string): MonitorControl => {

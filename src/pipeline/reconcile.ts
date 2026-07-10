@@ -4,6 +4,7 @@
  */
 import { listMonitorsDue } from '../db';
 import type { Env } from '../shared/env';
+import type { MonitorDoRpc } from '../shared/contracts';
 
 /** Alarm が正常に生きていれば自然発火しているはずの猶予期間。既定 5分 (wrangler.jsonc の cron 間隔と同オーダー) */
 export const DEFAULT_RECONCILE_GRACE_MS = 5 * 60_000;
@@ -27,9 +28,7 @@ export async function runReconciliation(
   for (const monitor of due) {
     try {
       const id = env.MONITOR_DO.idFromName(monitor.id);
-      const stub = env.MONITOR_DO.get(id) as unknown as {
-        scheduleMonitor(monitorId: string, nextRunAt: string | null): Promise<void>;
-      };
+      const stub = env.MONITOR_DO.get(id) as unknown as MonitorDoRpc;
       await stub.scheduleMonitor(monitor.id, monitor.nextRunAt);
       recovered += 1;
     } catch (err) {

@@ -233,6 +233,20 @@ export interface MonitorControl {
 /** monitorId から MonitorControl を得る。API層はこれを注入可能にする */
 export type MonitorControlFactory = (monitorId: string) => MonitorControl;
 
+/**
+ * MonitorObject DO が公開する (予定の) RPC メソッド群の固定シグネチャ。
+ * env.MONITOR_DO.get(id) の stub をキャストする際の単一の契約として、
+ * src/api/monitorControl.ts と src/pipeline/reconcile.ts の両方から参照する
+ * (レーンごとに別々のインライン型を重複定義しない)。
+ */
+export interface MonitorDoRpc {
+  scheduleMonitor(monitorId: string, nextRunAt: string | null): Promise<void>;
+  runNowMonitor(monitorId: string): Promise<{ started: boolean; reason: string | null }>;
+  pauseMonitor(monitorId: string): Promise<void>;
+  resumeMonitor(monitorId: string): Promise<void>;
+  getMonitorStatus(monitorId: string): Promise<MonitorControlStatus>;
+}
+
 export interface HostLeaseResult {
   granted: boolean;
   leaseId: string | null;

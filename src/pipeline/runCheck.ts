@@ -205,34 +205,42 @@ export async function runMonitorCheck(
   const latestSnapshot = await getLatestSnapshotForTarget(db, target.id);
   let outcome: Awaited<ReturnType<typeof fetchTargetThroughPolicy>>['outcome'] | undefined;
   try {
-    const fetchResult = await fetchTargetThroughPolicy(ctx, target.id, source.url, {
-      etag: latestSnapshot?.etag ?? null,
-      lastModified: latestSnapshot?.lastModified ?? null,
-    });
-    outcome = fetchResult.outcome;
-    const { lastAttemptId } = fetchResult;
+    try {
+      const fetchResult = await fetchTargetThroughPolicy(ctx, target.id, source.url, {
+        etag: latestSnapshot?.etag ?? null,
+        lastModified: latestSnapshot?.lastModified ?? null,
+      });
+      outcome = fetchResult.outcome;
+      const { lastAttemptId } = fetchResult;
 
-    if (!outcome.ok) {
-      return finishJob(ctx, 'failed');
-    }
+      if (!outcome.ok) {
+        return finishJob(ctx, 'failed');
+      }
 
-    await setTargetLastChecked(db, target.id, nowIso());
+      await setTargetLastChecked(db, target.id, nowIso());
 
-    // 304 Not Modified: 変更なしの成功。新規 Snapshot は作らない。
-    if (outcome.notModified || !outcome.body) {
+      // 304 Not Modified: 変更なしの成功。新規 Snapshot は作らない。
+      if (outcome.notModified || !outcome.body) {
+        return finishJob(ctx, 'succeeded');
+      }
+
+      // 7. Source 種別ごとの内容処理
+      if (source.type === 'page') {
+        await processPageContent(ctx, target, latestSnapshot, lastAttemptId, outcome as FetchSuccess, outcome.body);
+      } else {
+        await processFeedContent(ctx, target, lastAttemptId, outcome as FetchSuccess, outcome.body);
+      }
+
+      // 8. 通知ファンアウトは pageContent/feed 内で change 挿入時に完了済み。
+      // 9. Job 確定 + 次回スケジュール
       return finishJob(ctx, 'succeeded');
+    } catch (err) {
+      // 想定外の例外 (processPageContent/processFeedContent 等が throw したケース含む)。
+      // Job を 'running' のまま残すと以降の createCheckJobIfNew が同一スロットを再起動
+      // できなくなるため、再送出する前に必ず 'failed' で確定させる。
+      await finishJob(ctx, 'failed');
+      throw err;
     }
-
-    // 7. Source 種別ごとの内容処理
-    if (source.type === 'page') {
-      await processPageContent(ctx, target, latestSnapshot, lastAttemptId, outcome as FetchSuccess, outcome.body);
-    } else {
-      await processFeedContent(ctx, target, lastAttemptId, outcome as FetchSuccess, outcome.body);
-    }
-
-    // 8. 通知ファンアウトは pageContent/feed 内で change 挿入時に完了済み。
-    // 9. Job 確定 + 次回スケジュール
-    return finishJob(ctx, 'succeeded');
   } finally {
     await limiter.release(lease.leaseId as string, {
       failureClass: outcome ? (outcome.ok ? null : outcome.failureClass) : 'internal_error',

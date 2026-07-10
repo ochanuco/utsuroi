@@ -12,6 +12,7 @@ import { AdapterParseError } from '../adapters/errors';
 import type { FeedItem } from '../shared/contracts';
 import type { FetchSuccess } from '../shared/contracts';
 import { sha256Hex } from '../shared/hash';
+import { extractCharsetFromContentType } from '../normalize';
 import { checkRobots } from '../robots';
 import { checkUrlForSsrf, resolveAndCheck } from '../net';
 import {
@@ -142,7 +143,10 @@ export async function processFeedContent(
   // それ以外の想定外例外は握りつぶさずそのまま再送出する。
   let parsed;
   try {
-    parsed = parseSource(ctx.source.type, body, { baseUrl: ctx.source.url });
+    parsed = parseSource(ctx.source.type, body, {
+      baseUrl: ctx.source.url,
+      headerCharset: extractCharsetFromContentType(outcome.contentType),
+    });
   } catch (err) {
     if (err instanceof AdapterParseError) return;
     throw err;
@@ -228,7 +232,10 @@ export async function processSitemapIndexChildren(
 
     let parsed;
     try {
-      parsed = parseSource('sitemap', outcome.body, { baseUrl: childUrl });
+      parsed = parseSource('sitemap', outcome.body, {
+        baseUrl: childUrl,
+        headerCharset: extractCharsetFromContentType(outcome.contentType),
+      });
     } catch {
       continue;
     }

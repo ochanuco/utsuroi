@@ -32,6 +32,13 @@ interface HostState {
   nextAllowedAt: number | null;
   failureStreak: number;
   circuitOpenUntil: number | null;
+  /**
+   * half-open (circuitOpenUntil 経過後、まだ成否が確定していない) 状態で発行中の
+   * 単一プローブ lease の id。null は half-open プローブ無し (closed、または未着手)。
+   * この値が非null の間は acquireLease が追加のリースを一切許可しない
+   * (「半開状態では単一プローブのみ許可」を実装として保証する)。
+   */
+  halfOpenProbeLeaseId: string | null;
 }
 
 function emptyState(): HostState {
@@ -41,6 +48,7 @@ function emptyState(): HostState {
     nextAllowedAt: null,
     failureStreak: 0,
     circuitOpenUntil: null,
+    halfOpenProbeLeaseId: null,
   };
 }
 
@@ -58,8 +66,12 @@ export class HostObject extends DurableObject<Env> {
   }
 
   private async loadState(): Promise<HostState> {
-    const state = await this.ctx.storage.get<HostState>('state');
-    return state ?? emptyState();
+    // Partial で読む: 既存デプロイの永続化済み state に halfOpenProbeLeaseId フィールドが
+    // 無いケース (このフィールド追加前に保存された state) への防御。emptyState() の既定値と
+    // マージすることで、フィールド欠落時も安全な (null = half-open プローブ無し) 値になる。
+    const stored = await this.ctx.storage.get<Partial<HostState>>('state');
+    if (!stored) return emptyState();
+    return { ...emptyState(), ...stored };
   }
 
   private async saveState(state: HostState): Promise<void> {
@@ -70,6 +82,11 @@ export class HostObject extends DurableObject<Env> {
     for (const [leaseId, grantedAt] of Object.entries(state.activeLeases)) {
       if (now - grantedAt >= LEASE_TTL_MS) {
         delete state.activeLeases[leaseId];
+        // リークした (release() を呼ばずに終わった) プローブ lease が half-open 状態を
+        // 永久にブロックしないよう、期限切れと同時にプローブ枠も解放する。
+        if (state.halfOpenProbeLeaseId === leaseId) {
+          state.halfOpenProbeLeaseId = null;
+        }
       }
     }
   }
@@ -83,8 +100,23 @@ export class HostObject extends DurableObject<Env> {
       return { granted: false, leaseId: null, retryAfterMs: state.circuitOpenUntil - now };
     }
     if (state.circuitOpenUntil !== null && now >= state.circuitOpenUntil) {
-      // breaker window elapsed: half-open. Allow one probe through by clearing the breaker state.
+      // breaker window elapsed: half-open。単一プローブのみ許可する。既にプローブが
+      // 発行済み (未解決) であれば、通常の同時実行数枠とは無関係に追加の acquire を拒否する。
+      if (state.halfOpenProbeLeaseId !== null) {
+        await this.saveState(state);
+        return { granted: false, leaseId: null, retryAfterMs: MIN_ACCESS_INTERVAL_MS };
+      }
+      const leaseId = crypto.randomUUID();
+      state.activeLeases[leaseId] = now;
+      state.lastAcquireAt = now;
+      state.halfOpenProbeLeaseId = leaseId;
+      // circuitOpenUntil はプローブの成否 (releaseLease) が確定するまで維持しない: プローブが
+      // 発行された時点で「open ウィンドウは終わった」とみなし、以降の acquire は
+      // halfOpenProbeLeaseId の有無だけで制御する (プローブ失敗時は releaseLease が
+      // 新しい circuitOpenUntil を設定して re-open する)。
       state.circuitOpenUntil = null;
+      await this.saveState(state);
+      return { granted: true, leaseId, retryAfterMs: null };
     }
 
     if (Object.keys(state.activeLeases).length >= MAX_CONCURRENT_LEASES) {
@@ -115,6 +147,11 @@ export class HostObject extends DurableObject<Env> {
     const now = this.now();
     const state = await this.loadState();
     delete state.activeLeases[leaseId];
+    if (state.halfOpenProbeLeaseId === leaseId) {
+      // プローブの成否が確定した: half-open 状態を終了する (成功なら closed へ、
+      // 失敗なら下の failureStreak 更新により再度 circuitOpenUntil が設定され open へ戻る)。
+      state.halfOpenProbeLeaseId = null;
+    }
 
     if (outcome.failureClass === null) {
       state.failureStreak = 0;

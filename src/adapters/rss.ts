@@ -5,8 +5,8 @@ import { titleDateHashKey } from './keys';
 import { asArray, parseXmlDocument, textOf } from './xml';
 
 /** RSS 2.0 <channel><item> をパースする */
-export function parseRss(body: Uint8Array, _opts: { baseUrl: string }): AdapterParseResult {
-  const doc = parseXmlDocument(body);
+export function parseRss(body: Uint8Array, opts: { baseUrl: string; headerCharset?: string }): AdapterParseResult {
+  const doc = parseXmlDocument(body, opts.headerCharset);
   const rss = doc.rss;
   if (!rss || typeof rss !== 'object') {
     throw new AdapterParseError('unexpected_root', 'rss: expected <rss> root element');

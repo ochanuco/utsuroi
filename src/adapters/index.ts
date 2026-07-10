@@ -28,7 +28,7 @@ export { parseSitemap, parseSitemapIndex } from './sitemap';
 export function parseSource(
   sourceType: SourceType,
   body: Uint8Array,
-  opts: { baseUrl: string },
+  opts: { baseUrl: string; headerCharset?: string },
 ): AdapterParseResult {
   switch (sourceType) {
     case 'rss':
@@ -37,7 +37,7 @@ export function parseSource(
       return parseAtom(body, opts);
     case 'sitemap':
     case 'sitemap-index': {
-      const doc = parseXmlDocument(body);
+      const doc = parseXmlDocument(body, opts.headerCharset);
       const sitemapindex = doc.sitemapindex;
       if (sitemapindex && typeof sitemapindex === 'object') {
         return buildSitemapIndexResult(sitemapindex as Record<string, unknown>, opts);

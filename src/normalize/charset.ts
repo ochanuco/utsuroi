@@ -1,19 +1,34 @@
 /**
  * 生バイト列を UTF-8 統一の文字列にベストエフォートで復号する。
  *
- * 手順:
+ * 優先順位 (WHATWG のエンコーディング決定アルゴリズム準拠):
  * 1. BOM (UTF-8 / UTF-16LE / UTF-16BE) があればそれに従って復号する。
- * 2. 先頭付近のバイトを ISO-8859-1 として復号し (ASCII範囲は主要な文字コードで同一のため
+ * 2. HTTP レスポンスの Content-Type ヘッダの charset パラメータ (headerCharset 引数)。
+ * 3. 先頭付近のバイトを ISO-8859-1 として復号し (ASCII範囲は主要な文字コードで同一のため
  *    charset 宣言の検出に安全に使える)、`<meta charset=...>` /
  *    `<meta http-equiv="Content-Type" content="...charset=...">` / XML宣言の
- *    `encoding="..."` を正規表現で探す。
- * 3. 見つかった label が utf-8 以外かつ TextDecoder がサポートする場合はその label で再復号する。
+ *    `encoding="..."` を正規表現で探す (meta/XML宣言スニッフ)。
  * 4. 上記いずれにも該当しない、またはサポート外の label の場合は UTF-8 (fatal: false) にフォールバックする。
+ *
+ * headerCharset が TextDecoder でサポートされない label の場合は、その優先順位を飛ばして
+ * 3.のスニッフへフォールバックする (呼び出し元が不正な Content-Type を渡してきても壊れないため)。
  */
-export function decodeHtmlBestEffort(raw: Uint8Array): string {
+export function decodeHtmlBestEffort(raw: Uint8Array, headerCharset?: string): string {
   const bom = detectBom(raw);
   if (bom) {
     return new TextDecoder(bom.encoding).decode(raw.subarray(bom.length));
+  }
+
+  const normalizedHeaderCharset = headerCharset?.trim();
+  if (normalizedHeaderCharset) {
+    if (isUtf8Label(normalizedHeaderCharset)) {
+      return new TextDecoder('utf-8', { fatal: false, ignoreBOM: false }).decode(raw);
+    }
+    try {
+      return new TextDecoder(normalizedHeaderCharset, { fatal: false, ignoreBOM: false }).decode(raw);
+    } catch {
+      // TextDecoder 非対応の label。meta/XML宣言スニッフへフォールバックする。
+    }
   }
 
   const sniffLength = Math.min(raw.length, 4096);
@@ -30,6 +45,17 @@ export function decodeHtmlBestEffort(raw: Uint8Array): string {
   }
 
   return new TextDecoder('utf-8', { fatal: false, ignoreBOM: false }).decode(raw);
+}
+
+/**
+ * HTTP の `Content-Type` ヘッダ値から charset パラメータを抽出する (例:
+ * 'text/html; charset=Shift_JIS' -> 'Shift_JIS')。無ければ undefined。
+ */
+export function extractCharsetFromContentType(contentType: string | null | undefined): string | undefined {
+  if (!contentType) return undefined;
+  const match = contentType.match(/charset\s*=\s*("?)([^;"\s]+)\1/i);
+  const value = match?.[2]?.trim();
+  return value && value.length > 0 ? value : undefined;
 }
 
 function isUtf8Label(label: string): boolean {

@@ -38,9 +38,22 @@ function pickAlternateLink(links: unknown[]): string | null {
   return fallback;
 }
 
+/** href を baseUrl 基準の絶対URLへ解決する。解決できない (不正な href/baseUrl) 場合は null */
+function resolveHref(href: string | null, baseUrl: string): string | null {
+  if (!href) return null;
+  try {
+    return new URL(href, baseUrl).toString();
+  } catch {
+    return null;
+  }
+}
+
 /** Atom <feed><entry> をパースする */
-export function parseAtom(body: Uint8Array, _opts: { baseUrl: string }): AdapterParseResult {
-  const doc = parseXmlDocument(body);
+export function parseAtom(
+  body: Uint8Array,
+  opts: { baseUrl: string; headerCharset?: string },
+): AdapterParseResult {
+  const doc = parseXmlDocument(body, opts.headerCharset);
   const feed = doc.feed;
   if (!feed || typeof feed !== 'object') {
     throw new AdapterParseError('unexpected_root', 'atom: expected <feed> root element');
@@ -57,12 +70,15 @@ export function parseAtom(body: Uint8Array, _opts: { baseUrl: string }): Adapter
 
     const entryTitle = textOf(entry.title);
     const links = asArray(entry.link);
-    const altLink = pickAlternateLink(links);
+    // baseUrl (Source URL) 基準で href を絶対URL化してから stableKey/url に使う。
+    // href が不正 (URL コンストラクタで解決不能) な場合は resolveHref が null を返し、
+    // その候補は stableKey/url の決定から除外する (ベストエフォート)。
+    const altLink = resolveHref(pickAlternateLink(links), opts.baseUrl);
+    const firstLink = links.length > 0 ? resolveHref(linkHref(links[0]), opts.baseUrl) : null;
     const id = textOf(entry.id);
 
     // stableKey 優先順: id > link[rel=alternate] > link
-    const stableKey =
-      id ?? altLink ?? (links.length > 0 ? linkHref(links[0]) : null) ?? titleDateHashKey(entryTitle, textOf(entry.updated));
+    const stableKey = id ?? altLink ?? firstLink ?? titleDateHashKey(entryTitle, textOf(entry.updated));
 
     if (seen.has(stableKey)) continue;
     seen.add(stableKey);
@@ -72,7 +88,7 @@ export function parseAtom(body: Uint8Array, _opts: { baseUrl: string }): Adapter
 
     items.push({
       stableKey,
-      url: altLink ?? (links.length > 0 ? linkHref(links[0]) : null),
+      url: altLink ?? firstLink,
       title: entryTitle,
       publishedAt: publishedRaw ? normalizeIsoDate(publishedRaw) : null,
       updatedAt: updatedRaw ? normalizeIsoDate(updatedRaw) : null,

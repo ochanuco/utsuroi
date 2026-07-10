@@ -133,6 +133,19 @@ describe('parseRss', () => {
     expect(result.items[0]!.title).toBe('Café Post');
   });
 
+  it('decodes non-UTF-8 bodies via the HTTP header charset when there is no XML encoding declaration', () => {
+    // ISO-8859-1: 'é' (U+00E9) is a single byte 0xE9, matching charCodeAt directly.
+    // No <?xml ... encoding=?> declaration here -- only the (fictitious) HTTP header charset
+    // threaded through opts.headerCharset should drive the decode.
+    const xml = `<rss version="2.0"><channel><title>Café Feed</title><item><title>Café Post</title><guid>g1</guid></item></channel></rss>`;
+    const bytes = new Uint8Array(xml.length);
+    for (let i = 0; i < xml.length; i++) bytes[i] = xml.charCodeAt(i) & 0xff;
+
+    const result = parseRss(bytes, { ...BASE, headerCharset: 'iso-8859-1' });
+    expect(result.meta.title).toBe('Café Feed');
+    expect(result.items[0]!.title).toBe('Café Post');
+  });
+
   it('is reachable via parseSource', () => {
     const xml = `<rss version="2.0"><channel><title>F</title><item><guid>g</guid></item></channel></rss>`;
     const result = parseSource('rss', enc(xml), BASE);

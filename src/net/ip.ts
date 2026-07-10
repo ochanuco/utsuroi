@@ -153,6 +153,19 @@ export function classifyIPv6(groups: number[]): IpCheckResult {
     ];
     return classifyIPv4(v4);
   }
+  // IPv4-compatible ::a.b.c.d/96 (RFC 4291 の非推奨形式)。先頭96bit (groups[0..5]) が
+  // 全ゼロで、かつ IPv4-mapped (groups[5]===0xffff) ではないアドレス。::1 (loopback) /
+  // :: (unspecified) は上の分岐で既に確定しているため、ここに来るのは ::10.0.0.1 /
+  // ::127.0.0.1 のような「下位32bitに実質的なIPv4アドレスを持つ」ケースのみ。
+  if (groups.slice(0, 6).every(isZero)) {
+    const v4 = [groups[6]! >> 8, groups[6]! & 0xff, groups[7]! >> 8, groups[7]! & 0xff] as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    return classifyIPv4(v4);
+  }
   // fe80::/10 link-local
   if ((groups[0]! & 0xffc0) === 0xfe80) {
     return { blocked: true, reason: 'link-local' };

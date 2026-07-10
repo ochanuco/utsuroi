@@ -11,9 +11,36 @@
 import type { RobotsMode } from '../shared/types';
 import type { RobotsPolicyRow } from '../db';
 
+/**
+ * D1 (SQLite) の FOREIGN KEY 制約違反を検出する。
+ * migrations/0001_init.sql の subscriptions/deliveries は destination_id を
+ * NOT NULL REFERENCES destinations(id) (ON DELETE 未指定) としているため、参照が
+ * 残ったまま destinations 行を消そうとすると D1 がこの形のエラーで拒否する。
+ */
+export function isForeignKeyConstraintError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /FOREIGN KEY constraint failed|SQLITE_CONSTRAINT/i.test(message);
+}
+
+/**
+ * destination 削除時の従属レコード方針 (設計判断, report 参照):
+ * - subscriptions: destination を失った subscription は無意味なため、同時に削除する
+ *   (孤児レコードを残さない)。DELETE を同一 batch (トランザクション) にまとめ、
+ *   途中失敗時に subscriptions だけ消えて destinations が残るような半端な状態を防ぐ。
+ * - deliveries: 配送履歴として意図的に残す (削除しない)。deliveries.destination_id は
+ *   NOT NULL FK (ON DELETE 未指定) のままなので、対象 destination に delivery 履歴が
+ *   1件でも残っていればこの DELETE 自体が FOREIGN KEY 制約違反として失敗する
+ *   (= 履歴が残っている限り destination は物理削除できない、という安全側の挙動)。
+ *   呼び出し側 (destinationsルートの DELETE ハンドラ) は isForeignKeyConstraintError で
+ *   この失敗を検出し、409 Conflict として応答する。
+ */
 export async function deleteDestinationById(db: D1Database, id: string): Promise<boolean> {
-  const result = await db.prepare(`DELETE FROM destinations WHERE id = ?`).bind(id).run();
-  return (result.meta?.changes ?? 0) > 0;
+  const results = await db.batch([
+    db.prepare(`DELETE FROM subscriptions WHERE destination_id = ?`).bind(id),
+    db.prepare(`DELETE FROM destinations WHERE id = ?`).bind(id),
+  ]);
+  const destinationDeleteResult = results[1];
+  return (destinationDeleteResult?.meta?.changes ?? 0) > 0;
 }
 
 export async function deleteSubscriptionById(db: D1Database, id: string): Promise<boolean> {

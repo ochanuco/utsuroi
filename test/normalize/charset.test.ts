@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeHtmlBestEffort } from '../../src/normalize/charset';
+import { decodeHtmlBestEffort, extractCharsetFromContentType } from '../../src/normalize/charset';
 
 /**
  * ASCII の HTML 断片と、Shift_JIS で「あ」を表すバイト列 (0x82 0xA0) を連結した
@@ -64,5 +64,44 @@ describe('decodeHtmlBestEffort / meta http-equiv charset sniffing', () => {
     const decoded = decodeHtmlBestEffort(bytes);
     expect(decoded).not.toContain('あ');
     expect(decoded).toContain('�');
+  });
+});
+
+describe('decodeHtmlBestEffort / HTTP header charset priority (WHATWG: BOM > header > meta/XML sniff > UTF-8)', () => {
+  it('uses the HTTP header charset when there is no meta charset declaration at all', () => {
+    const bytes = buildHtmlBytes('');
+    const decoded = decodeHtmlBestEffort(bytes, 'Shift_JIS');
+    expect(decoded).toContain('あ');
+    expect(decoded).not.toContain('�');
+  });
+
+  it('prioritizes the HTTP header charset over a conflicting meta charset declaration', () => {
+    // meta claims utf-8 (wrong), but the body bytes are actually Shift_JIS -- the header
+    // charset must win per the WHATWG priority order (header beats meta/XML sniff).
+    const bytes = buildHtmlBytes('<meta charset="utf-8">');
+    const decoded = decodeHtmlBestEffort(bytes, 'Shift_JIS');
+    expect(decoded).toContain('あ');
+    expect(decoded).not.toContain('�');
+  });
+
+  it('falls back to meta/XML sniffing when the header charset label is unsupported by TextDecoder', () => {
+    const bytes = buildHtmlBytes('<meta charset="shift_jis">');
+    const decoded = decodeHtmlBestEffort(bytes, 'not-a-real-charset-label');
+    expect(decoded).toContain('あ');
+    expect(decoded).not.toContain('�');
+  });
+});
+
+describe('extractCharsetFromContentType', () => {
+  it('extracts the charset parameter from a Content-Type header value', () => {
+    expect(extractCharsetFromContentType('text/html; charset=Shift_JIS')).toBe('Shift_JIS');
+    expect(extractCharsetFromContentType('application/rss+xml;charset=UTF-8')).toBe('UTF-8');
+    expect(extractCharsetFromContentType('text/html; charset="UTF-8"')).toBe('UTF-8');
+  });
+
+  it('returns undefined when there is no charset parameter or no Content-Type at all', () => {
+    expect(extractCharsetFromContentType('text/html')).toBeUndefined();
+    expect(extractCharsetFromContentType(null)).toBeUndefined();
+    expect(extractCharsetFromContentType(undefined)).toBeUndefined();
   });
 });

@@ -46,6 +46,14 @@ interface PendingDeliveryQueryRow {
 export function createD1NotifyStore(db: D1Database, webhookEncKey: string | undefined): NotifyStore {
   return {
     async getPendingDelivery(deliveryId: string): Promise<PendingDelivery | null> {
+      // 暗号鍵未設定チェックは claim (UPDATE) より前に行う。後段で行うと、鍵が無いために
+      // 結局 throw して処理を中断するだけの delivery を 'sending' へ遷移させてしまい、
+      // (呼び出し元が再試行しても毎回同じ理由で失敗する一方) claimed_at が更新され続けて
+      // 他のワーカーからの正常な再試行機会を奪う (CLAIM_STALE_MS 経過まで claim できない)。
+      if (!webhookEncKey) {
+        throw new Error('WEBHOOK_ENC_KEY is not configured; cannot decrypt webhook_url for delivery');
+      }
+
       const now = nowIso();
       const staleBefore = new Date(Date.now() - CLAIM_STALE_MS).toISOString();
 
@@ -91,9 +99,6 @@ export function createD1NotifyStore(db: D1Database, webhookEncKey: string | unde
       // claim (UPDATE) が成功した直後なので理論上 null にはならないが、防御的に扱う。
       if (!row) return null;
 
-      if (!webhookEncKey) {
-        throw new Error('WEBHOOK_ENC_KEY is not configured; cannot decrypt webhook_url for delivery');
-      }
       const webhookUrl = await decryptWebhookUrl(row.webhook_url, webhookEncKey);
 
       const change: ChangeSummary = {

@@ -60,8 +60,11 @@ export function buildSitemapIndexResult(
 }
 
 /** Sitemap (urlset) をパースする。ルート要素が異なる場合は throw する */
-export function parseSitemap(body: Uint8Array, opts: { baseUrl: string }): AdapterParseResult {
-  const doc = parseXmlDocument(body);
+export function parseSitemap(
+  body: Uint8Array,
+  opts: { baseUrl: string; headerCharset?: string },
+): AdapterParseResult {
+  const doc = parseXmlDocument(body, opts.headerCharset);
   const urlset = doc.urlset;
   if (!urlset || typeof urlset !== 'object') {
     throw new AdapterParseError('unexpected_root', 'sitemap: expected <urlset> root element');
@@ -72,9 +75,9 @@ export function parseSitemap(body: Uint8Array, opts: { baseUrl: string }): Adapt
 /** Sitemap Index (sitemapindex) をパースする。ルート要素が異なる場合は throw する */
 export function parseSitemapIndex(
   body: Uint8Array,
-  opts: { baseUrl: string },
+  opts: { baseUrl: string; headerCharset?: string },
 ): AdapterParseResult {
-  const doc = parseXmlDocument(body);
+  const doc = parseXmlDocument(body, opts.headerCharset);
   const sitemapindex = doc.sitemapindex;
   if (!sitemapindex || typeof sitemapindex !== 'object') {
     throw new AdapterParseError('unexpected_root', 'sitemap-index: expected <sitemapindex> root element');

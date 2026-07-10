@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createD1NotifyStore, createDeliveryIfNew, insertChangeIfNew } from '../../src/db';
+import { createD1NotifyStore, createDeliveryIfNew, getDelivery, insertChangeIfNew } from '../../src/db';
 import { buildFixture, db, FIXTURE_WEBHOOK_URL, TEST_WEBHOOK_ENC_KEY } from './helpers';
 
 describe('createD1NotifyStore (implements src/shared/contracts.ts NotifyStore)', () => {
@@ -81,6 +81,27 @@ describe('createD1NotifyStore (implements src/shared/contracts.ts NotifyStore)',
     const retryCandidate = await store.getPendingDelivery(delivery.row.id);
     expect(retryCandidate).not.toBeNull();
     expect(retryCandidate?.attemptCount).toBe(1);
+  });
+
+  it('does not claim (transition to sending) a delivery when WEBHOOK_ENC_KEY is missing', async () => {
+    const d = db();
+    const store = createD1NotifyStore(d, undefined);
+    const { monitor, target, destination } = await buildFixture(d);
+    const change = await insertChangeIfNew(d, {
+      monitorId: monitor.id,
+      targetId: target.id,
+      targetUrl: target.url,
+      kind: 'updated',
+      dedupeKey: 'sha256:notify-enc-key-missing',
+    });
+    const delivery = await createDeliveryIfNew(d, change.row.id, destination.id);
+
+    await expect(store.getPendingDelivery(delivery.row.id)).rejects.toThrow(/WEBHOOK_ENC_KEY/);
+
+    // claim (UPDATE ... SET status = 'sending') must not have run: the delivery should still
+    // be 'pending' so that a later call (once the key is configured) can still claim it.
+    const row = await getDelivery(d, delivery.row.id);
+    expect(row?.status).toBe('pending');
   });
 
   it('atomically claims a delivery: a second concurrent getPendingDelivery call sees it as already claimed', async () => {

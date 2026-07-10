@@ -53,7 +53,7 @@ function stripTrackingParams(params: URLSearchParams, patterns: readonly string[
  * 数値参照 (10進 `&#NN;` / 16進 `&#xHH;`) にも対応する。
  */
 function decodeCommonHtmlEntities(value: string): string {
-  return value.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (match, ref: string) => {
+  return value.replace(/&(#[xX]?[0-9a-fA-F]+|[a-zA-Z]+);/g, (match, ref: string) => {
     if (ref[0] === '#') {
       const isHex = ref[1] === 'x' || ref[1] === 'X';
       const codePoint = Number.parseInt(isHex ? ref.slice(2) : ref.slice(1), isHex ? 16 : 10);

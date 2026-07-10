@@ -14,9 +14,18 @@ interface RobotsCacheRow {
 }
 
 function toCachedRobots(row: RobotsCacheRow): CachedRobots {
-  const rules: RobotsRules = row.rules
-    ? (JSON.parse(row.rules) as RobotsRules)
-    : { groups: [], sitemaps: [] };
+  const fallback: RobotsRules = { groups: [], sitemaps: [] };
+  let rules: RobotsRules = fallback;
+  if (row.rules) {
+    try {
+      rules = JSON.parse(row.rules) as RobotsRules;
+    } catch {
+      // rules 列が破損した JSON の場合、例外を伝播させず空の RobotsRules を使う
+      // (robots.txt を「取得できたが空扱い」に倒すことで、次回の再取得サイクルまで
+      // クラッシュせずに済む。checkRobots 側の TTL 判定で再取得されれば自然に回復する)。
+      rules = fallback;
+    }
+  }
   return {
     robotsUrl: row.robots_url,
     fetchedAt: row.fetched_at,

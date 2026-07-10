@@ -26,10 +26,24 @@ import { collapseHtmlWhitespace, normalizeExtractedText } from './text';
 const BLOCK_TAGS_SELECTOR = BLOCK_TAGS.join(', ');
 
 /**
+ * normalizeHtml の第3引数。src/shared/contracts.ts の NormalizeOptions (レーン間契約、
+ * コーディネーターのみ変更可) には含めず、normalize モジュール内で完結する拡張オプション
+ * として別引数で受け取る。
+ */
+export interface NormalizeExtraOptions {
+  /**
+   * HTTP レスポンスの Content-Type ヘッダから抽出した charset (例: 'Shift_JIS')。
+   * 優先順位は WHATWG 準拠で BOM > headerCharset > meta/XML宣言スニッフ > UTF-8
+   * (src/normalize/charset.ts の decodeHtmlBestEffort 参照)。
+   */
+  headerCharset?: string;
+}
+
+/**
  * HTMLバイト列を SPEC §12 の初期正規化ルールに従って NormalizedContent へ変換する。
  *
  * 処理順:
- * 1. UTF-8統一 (meta charset / XML宣言のベストエフォート復号)
+ * 1. UTF-8統一 (HTTPヘッダ charset / meta charset / XML宣言のベストエフォート復号)
  * 2. HTMLRewriter で script/style/noscript/コメント除去、ignoreSelectors除去、
  *    includeSelectors マーキング、href/src の絶対URL化+tracking除去、
  *    動的属性除外、属性順序の正規化 (アルファベット順に再構築)
@@ -41,10 +55,11 @@ const BLOCK_TAGS_SELECTOR = BLOCK_TAGS.join(', ');
 export async function normalizeHtml(
   raw: Uint8Array,
   opts: NormalizeOptions,
+  extra: NormalizeExtraOptions = {},
 ): Promise<NormalizedContent> {
   const rawHash = await sha256Hex(raw);
 
-  const decoded = decodeHtmlBestEffort(raw);
+  const decoded = decodeHtmlBestEffort(raw, extra.headerCharset);
   const hasIncludeSelectors = !!(opts.includeSelectors && opts.includeSelectors.length > 0);
   // includeSelectors マーキング用のセンチネルは、正規化1回ごとに生成する実行時一意
   // トークンを埋め込んだコメントを使う (入力HTML自身に同じ固定コメントが含まれる
