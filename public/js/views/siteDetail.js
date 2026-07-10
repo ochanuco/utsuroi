@@ -123,10 +123,15 @@ async function renderSourcesSection(container, siteId, onSourcesChanged) {
 
 // --- Fetcher Policy ----------------------------------------------------------
 
-function fetcherRowEditor(entry, onRemove) {
-  const fetcherIdInput = el('input', {
-    attrs: { type: 'text', required: true, placeholder: 'fetcher_id' },
-  });
+function fetcherRowEditor(entry, availableFetchers, onRemove) {
+  // fetchers はシード管理のマスタ (GET /api/fetchers)。未登録IDはAPIが400を返すため選択式にする。
+  const fetcherIdInput = el('select', { attrs: { required: true } });
+  fetcherIdInput.appendChild(el('option', { attrs: { value: '' }, text: '選択してください' }));
+  const ids = availableFetchers.map((f) => f.id);
+  if (entry.fetcher_id && !ids.includes(entry.fetcher_id)) ids.unshift(entry.fetcher_id);
+  for (const id of ids) {
+    fetcherIdInput.appendChild(el('option', { attrs: { value: id }, text: id }));
+  }
   fetcherIdInput.value = entry.fetcher_id ?? '';
 
   const checkboxes = FAILURE_CLASSES.map((cls) => {
@@ -167,8 +172,20 @@ async function renderFetcherPolicySection(container, siteId) {
   renderLoading(s);
 
   let policy = { allow_list: [], order_list: [] };
+  let availableFetchers = [];
   try {
-    policy = await api.get(`/sites/${encodeURIComponent(siteId)}/fetcher-policy`);
+    const [policyResult, fetchersResult] = await Promise.allSettled([
+      api.get(`/sites/${encodeURIComponent(siteId)}/fetcher-policy`),
+      api.get('/fetchers'),
+    ]);
+    if (policyResult.status === 'fulfilled') {
+      policy = policyResult.value;
+    } else if (policyResult.reason?.status !== 404) {
+      throw policyResult.reason;
+    }
+    if (fetchersResult.status === 'fulfilled') {
+      availableFetchers = fetchersResult.value.items ?? [];
+    }
   } catch (err) {
     if (err.status !== 404) throw err;
   }
@@ -208,7 +225,7 @@ async function renderFetcherPolicySection(container, siteId) {
   const rowsContainer = el('div');
 
   function addRow(entry = { fetcher_id: '', proceed_on: [] }) {
-    const rowEditor = fetcherRowEditor(entry, () => {
+    const rowEditor = fetcherRowEditor(entry, availableFetchers, () => {
       const idx = rows.indexOf(rowEditor);
       if (idx >= 0) rows.splice(idx, 1);
       rowEditor.node.remove();
