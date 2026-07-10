@@ -13,6 +13,7 @@ import {
   getFetcherPolicy,
   getRobotsPolicy,
   getSite,
+  listFetchers,
   listSites,
   putFetcherPolicy,
   recordAuditEvent,
@@ -116,6 +117,17 @@ export function sitesRoutes() {
     const validation = validateFetcherPolicy(policy);
     if (!validation.valid) {
       throw badRequest('invalid_fetcher_policy', validation.errors.join('; '));
+    }
+
+    // fetcher_policy_entries.fetcher_id は fetchers(id) への FK。マスタに無い id は
+    // D1 の FK 違反 (500) になる前にここで 400 として返す。
+    const known = new Set((await listFetchers(c.env.DB)).map((f) => f.id));
+    const unknown = policy.allowList.filter((id) => !known.has(id));
+    if (unknown.length > 0) {
+      throw badRequest(
+        'unknown_fetcher',
+        `未登録のFetcher ID: ${unknown.join(', ')} (利用可能: ${[...known].join(', ') || 'なし'})`
+      );
     }
 
     await putFetcherPolicy(c.env.DB, siteId, policy);
