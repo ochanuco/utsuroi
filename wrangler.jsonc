@@ -1,0 +1,45 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "utsuroi",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["MonitorObject", "HostObject"]
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "MONITOR_DO", "class_name": "MonitorObject" },
+      { "name": "HOST_DO", "class_name": "HostObject" }
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "utsuroi",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    { "binding": "BODIES", "bucket_name": "utsuroi-bodies" }
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "NOTIFY_QUEUE", "queue": "utsuroi-notify" }
+    ],
+    "consumers": [
+      { "queue": "utsuroi-notify", "max_retries": 5, "max_batch_size": 10, "max_batch_timeout": 5 }
+    ]
+  },
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  "vars": {
+    "USER_AGENT": "UtsuroiBot/0.1 (+https://github.com/ochanuco/utsuroi)"
+  },
+  "observability": { "enabled": true }
+}
