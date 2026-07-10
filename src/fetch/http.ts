@@ -110,7 +110,7 @@ async function readBodyWithLimit(response: Response, maxBytes: number): Promise<
 
 function safeDecodeText(bytes: Uint8Array): string {
   try {
-    return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+    return new TextDecoder('utf-8', { fatal: false, ignoreBOM: false }).decode(bytes);
   } catch {
     return '';
   }

@@ -1,4 +1,4 @@
-import type { RobotsVerdict } from '../shared/types';
+import type { RobotsVerdict } from '../shared/contracts';
 import type {
   CreateRobotsEvaluationInput,
   RobotsEvaluationRow,

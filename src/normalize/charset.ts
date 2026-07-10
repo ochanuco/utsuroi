@@ -22,14 +22,14 @@ export function decodeHtmlBestEffort(raw: Uint8Array): string {
 
   if (label && !isUtf8Label(label)) {
     try {
-      const decoder = new TextDecoder(label, { fatal: false });
+      const decoder = new TextDecoder(label, { fatal: false, ignoreBOM: false });
       return decoder.decode(raw);
     } catch {
       // サポート外の label。UTF-8 にフォールバック。
     }
   }
 
-  return new TextDecoder('utf-8', { fatal: false }).decode(raw);
+  return new TextDecoder('utf-8', { fatal: false, ignoreBOM: false }).decode(raw);
 }
 
 function isUtf8Label(label: string): boolean {

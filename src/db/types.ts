@@ -13,9 +13,9 @@ import type {
   FailureClass,
   MonitorStatus,
   RobotsMode,
-  RobotsVerdict,
   SourceType,
 } from '../shared/types';
+import type { RobotsVerdict } from '../shared/contracts';
 
 // ---------------------------------------------------------------------------
 // sites / sources / monitors

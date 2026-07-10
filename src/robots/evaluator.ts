@@ -1,7 +1,7 @@
 /**
  * RFC 9309 §2.2 のルール評価 (グループ選択・最長一致・ワイルドカード)。
  */
-import type { RobotsVerdict } from '../shared/types';
+import type { RobotsVerdict } from '../shared/contracts';
 import type { RobotsGroup, RobotsRule, RobotsRules } from './types';
 import { normalizePercentEncoding } from './parser';
 

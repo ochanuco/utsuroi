@@ -20,11 +20,11 @@ describe('parseSitemap', () => {
     expect(result.kind).toBe('sitemap');
     expect(result.childSitemaps).toEqual([]);
     expect(result.items).toHaveLength(2);
-    expect(result.items[0].stableKey).toBe('https://example.com/page-1');
-    expect(result.items[0].url).toBe('https://example.com/page-1');
-    expect(result.items[0].updatedAt).toBe(new Date('2024-01-01').toISOString());
-    expect(result.items[1].stableKey).toBe('https://other.example.com/page-2');
-    expect(result.items[1].updatedAt).toBe('2024-02-02T10:00:00.000Z');
+    expect(result.items[0]!.stableKey).toBe('https://example.com/page-1');
+    expect(result.items[0]!.url).toBe('https://example.com/page-1');
+    expect(result.items[0]!.updatedAt).toBe(new Date('2024-01-01').toISOString());
+    expect(result.items[1]!.stableKey).toBe('https://other.example.com/page-2');
+    expect(result.items[1]!.updatedAt).toBe('2024-02-02T10:00:00.000Z');
     // document order preserved
     expect(result.items.map((i) => i.url)).toEqual([
       'https://example.com/page-1',
@@ -38,8 +38,8 @@ describe('parseSitemap', () => {
     </urlset>`;
     const result = parseSitemap(enc(xml), BASE);
     expect(result.items).toHaveLength(1);
-    expect(result.items[0].stableKey).toBe('https://example.com/solo');
-    expect(result.items[0].updatedAt).toBeNull();
+    expect(result.items[0]!.stableKey).toBe('https://example.com/solo');
+    expect(result.items[0]!.updatedAt).toBeNull();
   });
 
   it('dedupes urls sharing the same resolved loc, keeping the first occurrence', () => {
@@ -49,7 +49,7 @@ describe('parseSitemap', () => {
     </urlset>`;
     const result = parseSitemap(enc(xml), BASE);
     expect(result.items).toHaveLength(1);
-    expect(result.items[0].updatedAt).toBe(new Date('2024-01-01').toISOString());
+    expect(result.items[0]!.updatedAt).toBe(new Date('2024-01-01').toISOString());
   });
 
   it('throws AdapterParseError(unexpected_root) for a non-urlset root', () => {

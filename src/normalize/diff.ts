@@ -1,5 +1,6 @@
 import { createTwoFilesPatch, diffLines } from 'diff';
-import type { DiffLevel, NormalizedContent, TextDiffResult } from '../shared/contracts';
+import type { NormalizedContent, TextDiffResult } from '../shared/contracts';
+import type { DiffLevel } from '../shared/types';
 
 /**
  * before/after のプレーンテキストから unified diff と行単位の増減数を算出する。

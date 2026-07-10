@@ -49,6 +49,9 @@ export function normalizeRfc822Date(raw: string): string | null {
     return fallbackParse(s);
   }
   const [, dayStr, monStr, yearStr, hourStr, minStr, secStr, zoneStr] = m;
+  if (!dayStr || !monStr || !yearStr || !hourStr || !minStr) {
+    return fallbackParse(s);
+  }
   const month = RFC822_MONTHS[monStr.toLowerCase()];
   if (month === undefined) {
     return fallbackParse(s);

@@ -17,18 +17,20 @@ function decodeBody(body: Uint8Array): string {
   let encoding = 'utf-8';
   try {
     const sniffLen = Math.min(200, body.length);
-    const head = new TextDecoder('utf-8', { fatal: false }).decode(body.subarray(0, sniffLen));
+    const head = new TextDecoder('utf-8', { fatal: false, ignoreBOM: false }).decode(
+      body.subarray(0, sniffLen)
+    );
     const match = head.match(/<\?xml[^>]*\sencoding=["']([^"']+)["']/i);
-    if (match) {
+    if (match?.[1]) {
       encoding = match[1].trim().toLowerCase();
     }
   } catch {
     encoding = 'utf-8';
   }
   try {
-    return new TextDecoder(encoding, { fatal: false }).decode(body);
+    return new TextDecoder(encoding, { fatal: false, ignoreBOM: false }).decode(body);
   } catch {
-    return new TextDecoder('utf-8', { fatal: false }).decode(body);
+    return new TextDecoder('utf-8', { fatal: false, ignoreBOM: false }).decode(body);
   }
 }
 

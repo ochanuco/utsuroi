@@ -31,14 +31,14 @@ describe('parseRss', () => {
     expect(result.kind).toBe('rss');
     expect(result.meta.title).toBe('Example Feed');
     expect(result.items).toHaveLength(2);
-    expect(result.items[0].stableKey).toBe('urn:uuid:abc-1');
-    expect(result.items[0].url).toBe('https://example.com/1');
-    expect(result.items[0].title).toBe('First Post');
+    expect(result.items[0]!.stableKey).toBe('urn:uuid:abc-1');
+    expect(result.items[0]!.url).toBe('https://example.com/1');
+    expect(result.items[0]!.title).toBe('First Post');
     // EST (UTC-5) 08:00 -> 13:00Z
-    expect(result.items[0].publishedAt).toBe('2002-10-02T13:00:00.000Z');
-    expect(result.items[1].stableKey).toBe('urn:uuid:abc-2');
+    expect(result.items[0]!.publishedAt).toBe('2002-10-02T13:00:00.000Z');
+    expect(result.items[1]!.stableKey).toBe('urn:uuid:abc-2');
     // +0900 08:00 -> previous day 23:00Z
-    expect(result.items[1].publishedAt).toBe('2002-10-02T23:00:00.000Z');
+    expect(result.items[1]!.publishedAt).toBe('2002-10-02T23:00:00.000Z');
     // document order preserved
     expect(result.items.map((i) => i.title)).toEqual(['First Post', 'Second Post']);
     expect(result.childSitemaps).toEqual([]);
@@ -50,7 +50,7 @@ describe('parseRss', () => {
     </channel></rss>`;
     const result = parseRss(enc(xml), BASE);
     expect(result.items).toHaveLength(1);
-    expect(result.items[0].stableKey).toBe('https://example.com/no-guid');
+    expect(result.items[0]!.stableKey).toBe('https://example.com/no-guid');
   });
 
   it('falls back to a title+pubDate hash when guid and link are both missing', () => {
@@ -59,12 +59,12 @@ describe('parseRss', () => {
     </channel></rss>`;
     const result = parseRss(enc(xml), BASE);
     expect(result.items).toHaveLength(1);
-    expect(result.items[0].url).toBeNull();
-    expect(result.items[0].stableKey).toMatch(/^[0-9a-f]{8}$/);
+    expect(result.items[0]!.url).toBeNull();
+    expect(result.items[0]!.stableKey).toMatch(/^[0-9a-f]{8}$/);
 
     // deterministic: same title+pubDate -> same key
     const again = parseRss(enc(xml), BASE);
-    expect(again.items[0].stableKey).toBe(result.items[0].stableKey);
+    expect(again.items[0]!.stableKey).toBe(result.items[0]!.stableKey);
   });
 
   it('handles CDATA content and namespaced sibling elements without breaking core fields', () => {
@@ -81,9 +81,9 @@ describe('parseRss', () => {
     </rss>`;
     const result = parseRss(enc(xml), BASE);
     expect(result.items).toHaveLength(1);
-    expect(result.items[0].title).toBe('Cool & <Fun> Title');
-    expect(result.items[0].summary).toBe('<p>body</p>');
-    expect(result.items[0].stableKey).toBe('cdata-guid');
+    expect(result.items[0]!.title).toBe('Cool & <Fun> Title');
+    expect(result.items[0]!.summary).toBe('<p>body</p>');
+    expect(result.items[0]!.stableKey).toBe('cdata-guid');
   });
 
   it('dedupes items sharing the same stableKey, keeping the first occurrence', () => {
@@ -94,8 +94,8 @@ describe('parseRss', () => {
     </channel></rss>`;
     const result = parseRss(enc(xml), BASE);
     expect(result.items).toHaveLength(2);
-    expect(result.items[0].title).toBe('Original');
-    expect(result.items[1].title).toBe('Unique');
+    expect(result.items[0]!.title).toBe('Original');
+    expect(result.items[1]!.title).toBe('Unique');
   });
 
   it('throws AdapterParseError(unexpected_root) for a non-rss root', () => {
@@ -130,7 +130,7 @@ describe('parseRss', () => {
 
     const result = parseRss(bytes, BASE);
     expect(result.meta.title).toBe('Café Feed');
-    expect(result.items[0].title).toBe('Café Post');
+    expect(result.items[0]!.title).toBe('Café Post');
   });
 
   it('is reachable via parseSource', () => {

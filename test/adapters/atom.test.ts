@@ -30,15 +30,15 @@ describe('parseAtom', () => {
     expect(result.meta.title).toBe('Example Atom');
     expect(result.items).toHaveLength(2);
 
-    expect(result.items[0].stableKey).toBe('urn:uuid:e1');
-    expect(result.items[0].url).toBe('https://example.com/e1');
-    expect(result.items[0].updatedAt).toBe('2024-01-02T03:04:05.000Z');
-    expect(result.items[0].publishedAt).toBe('2024-01-01T00:00:00.000Z');
-    expect(result.items[0].summary).toBe('summary one');
+    expect(result.items[0]!.stableKey).toBe('urn:uuid:e1');
+    expect(result.items[0]!.url).toBe('https://example.com/e1');
+    expect(result.items[0]!.updatedAt).toBe('2024-01-02T03:04:05.000Z');
+    expect(result.items[0]!.publishedAt).toBe('2024-01-01T00:00:00.000Z');
+    expect(result.items[0]!.summary).toBe('summary one');
 
-    expect(result.items[1].stableKey).toBe('urn:uuid:e2');
+    expect(result.items[1]!.stableKey).toBe('urn:uuid:e2');
     // +09:00 -> UTC
-    expect(result.items[1].updatedAt).toBe('2024-02-01T18:04:05.000Z');
+    expect(result.items[1]!.updatedAt).toBe('2024-02-01T18:04:05.000Z');
 
     // document order preserved
     expect(result.items.map((i) => i.title)).toEqual(['Entry One', 'Entry Two']);
@@ -55,8 +55,8 @@ describe('parseAtom', () => {
     </feed>`;
     const result = parseAtom(enc(xml), BASE);
     expect(result.items).toHaveLength(1);
-    expect(result.items[0].stableKey).toBe('only-1');
-    expect(result.items[0].url).toBe('https://example.com/only');
+    expect(result.items[0]!.stableKey).toBe('only-1');
+    expect(result.items[0]!.url).toBe('https://example.com/only');
   });
 
   it('falls back to link when id is missing, and to title+date hash when both are missing', () => {
@@ -64,14 +64,14 @@ describe('parseAtom', () => {
       <entry><title>No Id</title><link rel="alternate" href="https://example.com/no-id" /><updated>2024-01-01T00:00:00Z</updated></entry>
     </feed>`;
     const r1 = parseAtom(enc(xmlLinkOnly), BASE);
-    expect(r1.items[0].stableKey).toBe('https://example.com/no-id');
+    expect(r1.items[0]!.stableKey).toBe('https://example.com/no-id');
 
     const xmlNoKeys = `<feed xmlns="http://www.w3.org/2005/Atom"><title>F</title>
       <entry><title>No Keys At All</title><updated>2024-01-01T00:00:00Z</updated></entry>
     </feed>`;
     const r2 = parseAtom(enc(xmlNoKeys), BASE);
-    expect(r2.items[0].url).toBeNull();
-    expect(r2.items[0].stableKey).toMatch(/^[0-9a-f]{8}$/);
+    expect(r2.items[0]!.url).toBeNull();
+    expect(r2.items[0]!.stableKey).toMatch(/^[0-9a-f]{8}$/);
   });
 
   it('handles CDATA in title/summary', () => {
@@ -83,8 +83,8 @@ describe('parseAtom', () => {
       </entry>
     </feed>`;
     const result = parseAtom(enc(xml), BASE);
-    expect(result.items[0].title).toBe('A & B');
-    expect(result.items[0].summary).toBe('<p>hi</p>');
+    expect(result.items[0]!.title).toBe('A & B');
+    expect(result.items[0]!.summary).toBe('<p>hi</p>');
   });
 
   it('dedupes entries sharing the same stableKey, keeping the first occurrence', () => {
@@ -94,7 +94,7 @@ describe('parseAtom', () => {
     </feed>`;
     const result = parseAtom(enc(xml), BASE);
     expect(result.items).toHaveLength(1);
-    expect(result.items[0].title).toBe('First');
+    expect(result.items[0]!.title).toBe('First');
   });
 
   it('throws AdapterParseError(unexpected_root) for a non-atom root', () => {

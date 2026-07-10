@@ -87,20 +87,40 @@ async function runCleanPass(html: string, opts: NormalizeOptions): Promise<strin
   const rewriter = new HTMLRewriter();
 
   if (stripScripts) {
-    rewriter.on('script', { element: (e) => e.remove() });
+    rewriter.on('script', {
+      element: (e) => {
+        e.remove();
+      },
+    });
     // noscript は script 系のフォールバックマークアップとみなし stripScripts に束ねる
     // (NormalizeOptions に個別フラグが存在しないための判断)。
-    rewriter.on('noscript', { element: (e) => e.remove() });
+    rewriter.on('noscript', {
+      element: (e) => {
+        e.remove();
+      },
+    });
   }
   if (stripStyles) {
-    rewriter.on('style', { element: (e) => e.remove() });
+    rewriter.on('style', {
+      element: (e) => {
+        e.remove();
+      },
+    });
   }
   if (stripComments) {
-    rewriter.onDocument({ comments: (c) => c.remove() });
+    rewriter.onDocument({
+      comments: (c) => {
+        c.remove();
+      },
+    });
   }
 
   for (const selector of opts.ignoreSelectors ?? []) {
-    rewriter.on(selector, { element: (e) => e.remove() });
+    rewriter.on(selector, {
+      element: (e) => {
+        e.remove();
+      },
+    });
   }
 
   for (const selector of opts.includeSelectors ?? []) {
