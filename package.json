@@ -1,0 +1,23 @@
+{
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.2",
+    "@cloudflare/workers-types": "^5.20260708.1",
+    "@types/diff": "^8.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.107.1"
+  },
+  "dependencies": {
+    "diff": "^9.0.0",
+    "fast-xml-parser": "^5.9.3",
+    "hono": "^4.12.28",
+    "zod": "^4.4.3"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "private": true
+}
