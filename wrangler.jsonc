@@ -41,5 +41,9 @@
   "vars": {
     "USER_AGENT": "UtsuroiBot/0.1 (+https://github.com/ochanuco/utsuroi)"
   },
+  "assets": {
+    "directory": "./public",
+    "run_worker_first": ["/api/*"]
+  },
   "observability": { "enabled": true }
 }
