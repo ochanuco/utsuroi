@@ -64,7 +64,11 @@ async function processOne(
   }
 
   if (result.status === 429) {
-    // Retry-After を尊重する (SPEC §14)。attempt はキュー側の再配送で継続するため markFailed しない。
+    // Retry-After を尊重しつつ (SPEC §14)、attemptCount もインクリメントする。
+    // これをしないと Cloudflare Queue 側の max_retries で暗黙に drop/DLQ されたとき、
+    // このアプリの delivery 行が markFailed(dead:true) を一度も経ずに 'pending' のまま
+    // 永久に取り残されてしまう。
+    await store.markFailed(deliveryId, result.message, { dead: false });
     message.retry(
       result.retryAfterSeconds !== null ? { delaySeconds: result.retryAfterSeconds } : undefined,
     );

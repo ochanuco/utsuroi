@@ -83,9 +83,13 @@ function createDohResolver(fetchImpl: typeof fetch, endpoint: string): DnsResolv
     async resolve(hostname: string, recordType: 'A' | 'AAAA'): Promise<string[]> {
       const wantedType = recordType === 'A' ? DNS_TYPE_A : DNS_TYPE_AAAA;
       const requestUrl = `${endpoint}?name=${encodeURIComponent(hostname)}&type=${recordType}`;
-      const res = await fetchImpl(requestUrl, { headers: { accept: 'application/dns-json' } });
-      if (!res.ok) return [];
+      const res = await fetchImpl(requestUrl, {
+        headers: { accept: 'application/dns-json' },
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!res.ok) throw new Error(`DoH request failed with status ${res.status}`);
       const body = (await res.json()) as DohResponse;
+      if (body.Status !== 0) throw new Error(`DoH response indicates DNS error (Status ${body.Status})`);
       const answers = body.Answer ?? [];
       return answers.filter((a) => a.type === wantedType).map((a) => a.data);
     },
@@ -104,6 +108,10 @@ export interface ResolveAndCheckOptions {
 /**
  * 静的検査に加えて、ホスト名を実際にDoHで解決し全解決先IPを私設域チェックにかける。
  * DNS rebinding (登録時は無害なIPを返し、接続時に private IP を返す攻撃) 対策。
+ *
+ * 制約: Cloudflare Workers の fetch() は接続先IPを指定できないため、ここで検査した解決先IPに
+ * 実際の fetch 呼び出しを"ピン留め"することはできない (プラットフォーム制約)。resolveAndCheck は
+ * 検査時点の名前解決結果のみを保証し、fetch実行時の再解決までは保証しない (TOCTOU の残存リスクは許容)。
  */
 export async function resolveAndCheck(url: string, opts: ResolveAndCheckOptions = {}): Promise<SsrfCheckResult> {
   const staticResult = checkUrlForSsrf(url);
@@ -126,13 +134,13 @@ export async function resolveAndCheck(url: string, opts: ResolveAndCheckOptions 
     const [aRecords, aaaaRecords] = await Promise.all([resolver.resolve(hostname, 'A'), resolver.resolve(hostname, 'AAAA')]);
     addresses = [...aRecords, ...aaaaRecords];
   } catch {
-    // 解決失敗時は安全側 (拒否) に倒す
-    return deny('resolution_failed');
+    // 解決失敗時 (DoHの非2xx応答/DNSエラーStatus/例外/タイムアウト) は安全側 (拒否) に倒す
+    return deny('dns_resolution_failed');
   }
 
   if (addresses.length === 0) {
-    // 解決結果なし (NXDOMAIN等) はここでは判定不能。後続のfetchが自然に失敗する。
-    return allow();
+    // 解決結果なし (NXDOMAIN等) も安全側 (拒否) に倒す。後続のfetchに委ねず、ここでfail closedする。
+    return deny('dns_resolution_failed');
   }
 
   for (const address of addresses) {

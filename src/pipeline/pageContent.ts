@@ -118,18 +118,22 @@ export async function processPageContent(
     detectedAt: fetchedAtIso,
   });
 
-  if (inserted.inserted) {
-    const subs = await listMatchingSubscriptions(ctx.db, {
-      siteId: ctx.site.id,
-      monitorId: ctx.monitor.id,
-      kind: 'updated',
-    });
-    for (const sub of subs) {
-      const delivery = await createDeliveryIfNew(ctx.db, inserted.row.id, sub.destinationId);
-      if (delivery.inserted) {
-        await ctx.env.NOTIFY_QUEUE.send({ deliveryId: delivery.row.id });
-      }
+  // inserted.inserted が false (dedupeKey 重複) でも、前回実行が Change 挿入後・delivery/enqueue 前に
+  // クラッシュした可能性があるため、配送は常に inserted.row に対して行う (at-least-once 復旧)。
+  // createDeliveryIfNew 自身が冪等 (insert-if-new) なので毎回呼んでも安全。changeIds だけは
+  // 「今回新規検出した change」を表すため inserted.inserted の場合のみ積む。
+  const subs = await listMatchingSubscriptions(ctx.db, {
+    siteId: ctx.site.id,
+    monitorId: ctx.monitor.id,
+    kind: 'updated',
+  });
+  for (const sub of subs) {
+    const delivery = await createDeliveryIfNew(ctx.db, inserted.row.id, sub.destinationId);
+    if (delivery.inserted) {
+      await ctx.env.NOTIFY_QUEUE.send({ deliveryId: delivery.row.id });
     }
+  }
+  if (inserted.inserted) {
     ctx.changeIds.push(inserted.row.id);
   }
 }

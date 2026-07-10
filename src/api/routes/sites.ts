@@ -56,7 +56,7 @@ const fetcherPolicySchema = z.object({
 });
 
 const robotsOverrideSchema = z.object({
-  canonical_origin: z.string().min(1),
+  canonical_origin: z.string().url(),
   mode: z.enum(['ignore', 'enforce']),
   reason: z.string().optional(),
   confirm: z.boolean().optional(),

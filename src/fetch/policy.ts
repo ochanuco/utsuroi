@@ -29,6 +29,10 @@ export function validateFetcherPolicy(policy: FetcherPolicy): FetcherPolicyValid
 
   const allowSet = new Set(allowList);
 
+  if (allowSet.size !== allowList.length) {
+    errors.push('allowList must not contain duplicate fetcherId entries');
+  }
+
   for (const entry of orderList) {
     if (!allowSet.has(entry.fetcherId)) {
       errors.push(`orderList contains fetcherId not present in allowList: '${entry.fetcherId}'`);

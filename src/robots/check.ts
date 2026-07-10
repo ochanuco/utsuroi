@@ -10,6 +10,8 @@ export const DEFAULT_ROBOTS_USER_AGENT = 'UtsuroiBot/1.0 (+https://utsuroi.examp
 export const DEFAULT_UA_TOKEN = 'utsuroibot';
 export const DEFAULT_ROBOTS_TTL_SECONDS = 3600;
 export const MAX_ROBOTS_BYTES = 500 * 1024; // 500 KiB
+/** robots.txt 取得のタイムアウト既定値 (ms)。無応答サーバによるハング防止 */
+export const DEFAULT_ROBOTS_FETCH_TIMEOUT_MS = 10_000;
 
 export interface CheckRobotsOptions {
   /** robots.txt 取得に使う fetch 実装。既定 globalThis.fetch */
@@ -22,6 +24,8 @@ export interface CheckRobotsOptions {
   cache?: RobotsCache;
   /** キャッシュ TTL 秒。既定 3600 */
   ttlSeconds?: number;
+  /** robots.txt 取得のタイムアウト (ms)。既定 DEFAULT_ROBOTS_FETCH_TIMEOUT_MS (10秒) */
+  timeoutMs?: number;
   /** テスト用の時刻注入 (epoch ms) */
   now?: () => number;
 }
@@ -70,19 +74,28 @@ async function fetchRobots(
   fetchImpl: typeof fetch,
   userAgent: string,
   nowIso: string,
+  timeoutMs: number,
 ): Promise<CachedRobots> {
   let response: Response;
   try {
-    response = await fetchImpl(robotsUrl, { headers: { 'user-agent': userAgent } });
+    response = await fetchImpl(robotsUrl, {
+      headers: { 'user-agent': userAgent },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
   } catch {
-    // ネットワークエラー → 取得不能 (RFC 9309: disallow 扱い)
+    // ネットワークエラー・タイムアウト → 取得不能 (RFC 9309: disallow 扱い)
     return { robotsUrl, fetchedAt: nowIso, rules: EMPTY_ROBOTS_RULES, unavailable: true };
   }
 
   if (response.status >= 200 && response.status < 300) {
-    const text = await readCappedText(response, MAX_ROBOTS_BYTES);
-    const rules: RobotsRules = parseRobotsTxt(text);
-    return { robotsUrl, fetchedAt: nowIso, rules, unavailable: false };
+    try {
+      const text = await readCappedText(response, MAX_ROBOTS_BYTES);
+      const rules: RobotsRules = parseRobotsTxt(text);
+      return { robotsUrl, fetchedAt: nowIso, rules, unavailable: false };
+    } catch {
+      // 本文読み取り・パース失敗 → 取得不能 (disallow 扱い)
+      return { robotsUrl, fetchedAt: nowIso, rules: EMPTY_ROBOTS_RULES, unavailable: true };
+    }
   }
 
   if (response.status >= 400 && response.status < 500) {
@@ -103,6 +116,7 @@ export async function checkRobots(
   const userAgent = opts.userAgent ?? DEFAULT_ROBOTS_USER_AGENT;
   const uaToken = opts.uaToken ?? DEFAULT_UA_TOKEN;
   const ttlSeconds = opts.ttlSeconds ?? DEFAULT_ROBOTS_TTL_SECONDS;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_ROBOTS_FETCH_TIMEOUT_MS;
   const now = opts.now ?? (() => Date.now());
 
   const origin = new URL(originUrl).origin;
@@ -124,7 +138,7 @@ export async function checkRobots(
 
   if (!entry) {
     const nowIso = new Date(now()).toISOString();
-    entry = await fetchRobots(robotsUrl, fetchImpl, userAgent, nowIso);
+    entry = await fetchRobots(robotsUrl, fetchImpl, userAgent, nowIso, timeoutMs);
     if (opts.cache) {
       await opts.cache.put(origin, entry);
     }

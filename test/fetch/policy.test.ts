@@ -83,6 +83,16 @@ describe('validateFetcherPolicy', () => {
     expect(result.errors.some((e) => e.includes('allowList must not be empty'))).toBe(true);
   });
 
+  it('rejects an allowList containing a duplicate fetcherId even if orderList count matches', () => {
+    const policy: FetcherPolicy = {
+      allowList: ['a', 'a'],
+      orderList: [{ fetcherId: 'a' }],
+    };
+    const result = validateFetcherPolicy(policy);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('duplicate'))).toBe(true);
+  });
+
   it('reports multiple violations simultaneously', () => {
     const policy: FetcherPolicy = {
       allowList: [],

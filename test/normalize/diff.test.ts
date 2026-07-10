@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compareSnapshots, diffText, normalizeHtml } from '../../src/normalize';
-import type { NormalizedContent } from '../../src/shared/contracts';
+import type { NormalizedContent, NormalizeOptions } from '../../src/shared/contracts';
 
 function toBytes(html: string): Uint8Array {
   return new TextEncoder().encode(html);
@@ -41,8 +41,11 @@ describe('diffText', () => {
 });
 
 describe('compareSnapshots', () => {
-  async function snapshot(html: string): Promise<NormalizedContent> {
-    return normalizeHtml(toBytes(html), { baseUrl });
+  async function snapshot(
+    html: string,
+    opts: Partial<Omit<NormalizeOptions, 'baseUrl'>> = {},
+  ): Promise<NormalizedContent> {
+    return normalizeHtml(toBytes(html), { baseUrl, ...opts });
   }
 
   it('changed: false, level: null when raw is identical', async () => {
@@ -54,11 +57,15 @@ describe('compareSnapshots', () => {
 
   it('changed: false, level: null when raw differs but normalized content is equivalent', async () => {
     // Only a nonce attribute (a dynamic attribute) differs at the byte level.
+    // stripScripts: false so the <script> element (and its nonce) survives normalization
+    // and the nonce-stripping logic is actually exercised, not skipped entirely.
     const before = await snapshot(
       `<html><body><script nonce="AAA">void 0</script><p>Hello</p></body></html>`,
+      { stripScripts: false },
     );
     const after = await snapshot(
       `<html><body><script nonce="BBB">void 0</script><p>Hello</p></body></html>`,
+      { stripScripts: false },
     );
     expect(before.rawHash).not.toBe(after.rawHash);
     expect(compareSnapshots(before, after)).toEqual({ changed: false, level: null });

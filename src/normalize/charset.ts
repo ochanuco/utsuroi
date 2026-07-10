@@ -51,15 +51,44 @@ function detectBom(raw: Uint8Array): { encoding: string; length: number } | null
 }
 
 const META_CHARSET_RE = /<meta[^>]+charset\s*=\s*["']?([a-zA-Z0-9_-]+)/i;
-const META_HTTP_EQUIV_RE = /<meta[^>]+http-equiv\s*=\s*["']?content-type["'][^>]*content\s*=\s*["'][^"']*charset=([a-zA-Z0-9_-]+)/i;
+const META_TAG_RE = /<meta\b[^>]*>/gi;
+const HTTP_EQUIV_ATTR_RE = /http-equiv\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i;
+const CONTENT_ATTR_RE = /\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i;
+const CONTENT_CHARSET_RE = /charset\s*=\s*([a-zA-Z0-9_-]+)/i;
 const XML_DECL_RE = /<\?xml[^>]+encoding\s*=\s*["']([a-zA-Z0-9_-]+)["']/i;
+
+/**
+ * `<meta http-equiv="Content-Type" content="...charset=...">` の charset を、
+ * http-equiv / content の属性順序に依存せず抽出する。
+ */
+function sniffMetaHttpEquivCharset(preview: string): string | null {
+  const metaTags = preview.match(META_TAG_RE);
+  if (!metaTags) return null;
+
+  for (const tag of metaTags) {
+    const httpEquivMatch = tag.match(HTTP_EQUIV_ATTR_RE);
+    if (!httpEquivMatch) continue;
+    const httpEquivValue = httpEquivMatch[1] ?? httpEquivMatch[2] ?? httpEquivMatch[3];
+    if (httpEquivValue?.toLowerCase() !== 'content-type') continue;
+
+    const contentMatch = tag.match(CONTENT_ATTR_RE);
+    if (!contentMatch) continue;
+    const contentValue = contentMatch[1] ?? contentMatch[2] ?? contentMatch[3];
+    if (!contentValue) continue;
+
+    const charsetMatch = contentValue.match(CONTENT_CHARSET_RE);
+    if (charsetMatch?.[1]) return charsetMatch[1];
+  }
+
+  return null;
+}
 
 function sniffCharsetLabel(preview: string): string | null {
   const metaCharset = preview.match(META_CHARSET_RE);
   if (metaCharset?.[1]) return metaCharset[1];
 
-  const metaHttpEquiv = preview.match(META_HTTP_EQUIV_RE);
-  if (metaHttpEquiv?.[1]) return metaHttpEquiv[1];
+  const metaHttpEquiv = sniffMetaHttpEquivCharset(preview);
+  if (metaHttpEquiv) return metaHttpEquiv;
 
   const xmlDecl = preview.match(XML_DECL_RE);
   if (xmlDecl?.[1]) return xmlDecl[1];

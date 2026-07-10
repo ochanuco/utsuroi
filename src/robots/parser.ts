@@ -137,7 +137,7 @@ export function parseRobotsTxt(text: string): RobotsRules {
     }
 
     // crawl-delay, host, その他未知ディレクティブは解釈せず無視 (グループ境界には影響しない)
-    collectingAgents = false;
+    continue;
   }
 
   flushGroup();

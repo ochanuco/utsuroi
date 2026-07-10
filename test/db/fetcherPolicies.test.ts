@@ -50,6 +50,7 @@ describe('fetcher_policies / fetcher_policy_entries (SPEC §8)', () => {
 
     const policy = await getFetcherPolicy(d, site.id);
     expect(policy?.allowList).toEqual([browserId]);
+    expect(policy?.orderList).toEqual([{ fetcherId: browserId, proceedOn: undefined }]);
   });
 
   it('rejects an orderList that does not exactly match allowList membership', async () => {

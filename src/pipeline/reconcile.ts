@@ -25,12 +25,18 @@ export async function runReconciliation(
   let recovered = 0;
 
   for (const monitor of due) {
-    const id = env.MONITOR_DO.idFromName(monitor.id);
-    const stub = env.MONITOR_DO.get(id) as unknown as {
-      scheduleMonitor(monitorId: string, nextRunAt: string | null): Promise<void>;
-    };
-    await stub.scheduleMonitor(monitor.id, monitor.nextRunAt);
-    recovered += 1;
+    try {
+      const id = env.MONITOR_DO.idFromName(monitor.id);
+      const stub = env.MONITOR_DO.get(id) as unknown as {
+        scheduleMonitor(monitorId: string, nextRunAt: string | null): Promise<void>;
+      };
+      await stub.scheduleMonitor(monitor.id, monitor.nextRunAt);
+      recovered += 1;
+    } catch (err) {
+      // 1件の failure で残り全件の再スケジュールを止めないよう、ログして次へ進む
+      // (SPEC §10, ADR-0003: reconcile は best-effort の復旧経路)。
+      console.error('reconcile: failed to reschedule monitor', monitor.id, err);
+    }
   }
 
   return { recovered };

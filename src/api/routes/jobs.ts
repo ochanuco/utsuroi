@@ -3,9 +3,9 @@
  */
 import { Hono } from 'hono';
 import type { Env } from '../../shared/env';
-import { getCheckJob, listCheckAttempts } from '../../db';
+import { countCheckAttempts, getCheckJob, listCheckAttempts } from '../../db';
 import { notFound } from '../errors';
-import { paginate, parsePagination } from '../http';
+import { parsePagination } from '../http';
 import { serializeCheckAttempt } from '../serialize';
 
 export function jobsRoutes() {
@@ -17,8 +17,12 @@ export function jobsRoutes() {
     if (!job) throw notFound('check_job_not_found', 'check job not found');
 
     const pagination = parsePagination(c);
-    const attempts = await listCheckAttempts(c.env.DB, jobId);
-    return c.json({ items: paginate(attempts, pagination).map(serializeCheckAttempt), total: attempts.length });
+    const attempts = await listCheckAttempts(c.env.DB, jobId, {
+      limit: pagination.limit,
+      offset: pagination.offset,
+    });
+    const total = await countCheckAttempts(c.env.DB, jobId);
+    return c.json({ items: attempts.map(serializeCheckAttempt), total });
   });
 
   return router;

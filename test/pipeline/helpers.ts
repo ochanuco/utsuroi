@@ -14,7 +14,31 @@ import {
   type SiteRow,
   type SourceRow,
 } from '../../src/db';
+import type { HostLimiter } from '../../src/shared/contracts';
+import type { Env } from '../../src/shared/env';
 import type { ChangeKind, SourceType } from '../../src/shared/types';
+
+/** テスト用に一部フィールドを差し替えた Env を作る (env は cloudflare:test の実バインディング) */
+export function fakeEnv(overrides: Partial<Env> = {}): Env {
+  return { ...env, ...overrides } as Env;
+}
+
+/**
+ * テストでは HostObject 自体を経由せず、常に即時許可する HostLimiter を注入する。
+ * releaseCalls を渡すと release() 呼び出し (leaseId + opts) を記録する
+ * (host lease リーク防止のテスト用、fix: runCheck.ts の try/finally)。
+ */
+export function grantingLimiter(
+  releaseCalls?: Array<{ leaseId: string; opts: unknown }>,
+): (origin: string) => HostLimiter {
+  let counter = 0;
+  return () => ({
+    acquire: async () => ({ granted: true, leaseId: `lease-${counter++}`, retryAfterMs: null }),
+    release: async (leaseId: string, opts: unknown) => {
+      releaseCalls?.push({ leaseId, opts });
+    },
+  });
+}
 
 /** DB.DB (D1) binding。テストごとに isolated storage でリセットされる。 */
 export function db(): D1Database {
@@ -87,9 +111,14 @@ export async function buildPipelineFixture(
 }
 
 /**
- * runMonitorCheck 内の SSRF (resolveAndCheck) が発行する Cloudflare DoH 解決要求を
- * 「解決結果なし (allow)」として素通りさせつつ、それ以外の URL は個別ハンドラへ委譲する
- * fetch スタブを作る。DO 経由の統合テスト・パイプライン単体テストの両方で使う。
+ * runMonitorCheck 内の SSRF (resolveAndCheck) が発行する Cloudflare DoH 解決要求に対し、
+ * 公開 IP (example.com の実 IP) を解決結果として返して通過させつつ、それ以外の URL は
+ * 個別ハンドラへ委譲する fetch スタブを作る。DO 経由の統合テスト・パイプライン単体テストの
+ * 両方で使う。
+ *
+ * 注意: resolveAndCheck は解決失敗/解決結果0件を fail-closed (deny) として扱う (src/net/ssrf.ts)
+ * ため、A レコードには具体的な公開 IP を返す必要がある (旧: Answer 省略で allow だったが、
+ * fail-closed 化に伴い他のテストが軒並み ssrf_blocked になるのを防ぐため更新)。
  */
 export function routedFetch(
   handlers: Record<string, (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> | Response>,
@@ -97,7 +126,11 @@ export function routedFetch(
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     if (url.includes('dns-query')) {
-      return new Response(JSON.stringify({ Status: 0 }), {
+      const isARecordQuery = new URL(url).searchParams.get('type') === 'A';
+      const answer = isARecordQuery
+        ? [{ name: 'example.com', type: 1, TTL: 60, data: '93.184.216.34' }]
+        : [];
+      return new Response(JSON.stringify({ Status: 0, Answer: answer }), {
         status: 200,
         headers: { 'content-type': 'application/dns-json' },
       });

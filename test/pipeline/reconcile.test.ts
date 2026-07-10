@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { runReconciliation } from '../../src/pipeline/reconcile';
 import type { Env } from '../../src/shared/env';
 import { buildPipelineFixture } from './helpers';
@@ -67,5 +67,52 @@ describe('runReconciliation (ADR-0003: Alarm loss recovery)', () => {
     });
 
     expect(scheduled.has(monitor.id)).toBe(false);
+  });
+
+  it('isolates a single scheduleMonitor failure so later due monitors are still rescheduled', async () => {
+    const { monitor: monitorA } = await buildPipelineFixture({ nextRunAt: '2020-01-01T00:00:00.000Z' });
+    const { monitor: monitorB } = await buildPipelineFixture({ nextRunAt: '2020-01-01T00:00:01.000Z' });
+    const { monitor: monitorC } = await buildPipelineFixture({ nextRunAt: '2020-01-01T00:00:02.000Z' });
+
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const scheduled = new Set<string>();
+
+    const fakeEnv: Env = {
+      ...env,
+      MONITOR_DO: {
+        idFromName: (name: string) => name,
+        get: () => ({
+          scheduleMonitor: async (monitorId: string) => {
+            if (monitorId === monitorB.id) {
+              throw new Error('DO unavailable');
+            }
+            scheduled.add(monitorId);
+          },
+        }),
+      },
+    } as unknown as Env;
+
+    const { recovered } = await runReconciliation(fakeEnv, {
+      now: () => new Date('2026-07-10T00:10:00.000Z'),
+    });
+
+    // monitorA (earlier next_run_at) and monitorC (later, iterated after the throwing monitorB)
+    // must both still get scheduled: one failure must not abort the whole reconciliation loop.
+    expect(scheduled.has(monitorA.id)).toBe(true);
+    expect(scheduled.has(monitorC.id)).toBe(true);
+    expect(scheduled.has(monitorB.id)).toBe(false);
+
+    // `recovered` only counts successful reschedules; the failing monitorB must not be counted.
+    // (D1 state isn't reset between it() calls in this file, so we can't assert an absolute total,
+    // but every successful call in this fakeEnv is recorded in `scheduled`, so the two counts must match.)
+    expect(recovered).toBe(scheduled.size);
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'reconcile: failed to reschedule monitor',
+      monitorB.id,
+      expect.any(Error),
+    );
+
+    consoleErrorSpy.mockRestore();
   });
 });

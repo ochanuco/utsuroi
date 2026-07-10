@@ -95,10 +95,23 @@ export async function getChange(db: D1Database, id: string): Promise<ChangeRow |
   return row ? mapRow(row) : null;
 }
 
-export async function listChangesByMonitor(db: D1Database, monitorId: string): Promise<ChangeRow[]> {
-  const { results } = await db
-    .prepare(`SELECT * FROM changes WHERE monitor_id = ? ORDER BY detected_at DESC`)
-    .bind(monitorId)
-    .all();
+export async function listChangesByMonitor(
+  db: D1Database,
+  monitorId: string,
+  pagination?: { limit: number; offset: number }
+): Promise<ChangeRow[]> {
+  const limitClause = pagination ? ` LIMIT ? OFFSET ?` : '';
+  const stmt = db.prepare(`SELECT * FROM changes WHERE monitor_id = ? ORDER BY detected_at DESC${limitClause}`);
+  const bound = pagination ? stmt.bind(monitorId, pagination.limit, pagination.offset) : stmt.bind(monitorId);
+  const { results } = await bound.all();
   return results.map(mapRow);
+}
+
+/** monitorId に紐づく Change の総数 (ページング用)。listChangesByMonitor と対で使う。 */
+export async function countChangesByMonitor(db: D1Database, monitorId: string): Promise<number> {
+  const row = await db
+    .prepare(`SELECT COUNT(*) as count FROM changes WHERE monitor_id = ?`)
+    .bind(monitorId)
+    .first<{ count: number }>();
+  return row?.count ?? 0;
 }

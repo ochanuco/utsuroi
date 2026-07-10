@@ -21,4 +21,21 @@ describe('GET /api/audit-events', () => {
     const res = await app.request('/api/audit-events', {}, testEnv());
     expect(res.status).toBe(401);
   });
+
+  it('reports the true total count, not just the fetched page size', async () => {
+    const { app } = buildTestApp();
+    const subject = uniqueName('audit-subject-paged');
+    const pageLimit = 5;
+    const totalEvents = pageLimit + 3;
+    for (let i = 0; i < totalEvents; i++) {
+      await recordAuditEvent(db(), { actor: 'admin', action: 'robots_override.enable', subject, reason: null });
+    }
+
+    const res = await app.request(`/api/audit-events?limit=${pageLimit}&offset=0`, { headers: authHeaders() }, testEnv());
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.items).toHaveLength(pageLimit);
+    expect(body.total).toBeGreaterThanOrEqual(totalEvents);
+    expect(body.total).not.toBe(body.items.length);
+  });
 });

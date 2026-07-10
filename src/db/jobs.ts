@@ -165,10 +165,24 @@ export async function createCheckAttempt(
   };
 }
 
-export async function listCheckAttempts(db: D1Database, checkJobId: string): Promise<CheckAttemptRow[]> {
-  const { results } = await db
-    .prepare(`SELECT * FROM check_attempts WHERE check_job_id = ? ORDER BY attempt_index ASC`)
-    .bind(checkJobId)
-    .all();
+export async function listCheckAttempts(
+  db: D1Database,
+  checkJobId: string,
+  pagination?: { limit: number; offset: number }
+): Promise<CheckAttemptRow[]> {
+  const limitClause = pagination ? ` LIMIT ? OFFSET ?` : '';
+  const stmt = db.prepare(
+    `SELECT * FROM check_attempts WHERE check_job_id = ? ORDER BY attempt_index ASC${limitClause}`
+  );
+  const bound = pagination ? stmt.bind(checkJobId, pagination.limit, pagination.offset) : stmt.bind(checkJobId);
+  const { results } = await bound.all();
   return results.map(mapAttemptRow);
+}
+
+export async function countCheckAttempts(db: D1Database, checkJobId: string): Promise<number> {
+  const row = await db
+    .prepare(`SELECT COUNT(*) as count FROM check_attempts WHERE check_job_id = ?`)
+    .bind(checkJobId)
+    .first<{ count: number }>();
+  return row?.count ?? 0;
 }

@@ -110,6 +110,24 @@ describe('PUT /api/sites/:id/robots-overrides (ADR-0009)', () => {
     );
     expect(res.status).toBe(404);
   });
+
+  it('rejects a non-URL canonical_origin (400)', async () => {
+    const { app } = buildTestApp();
+    const site = await createSite(db(), { name: uniqueName('Robots Site') });
+
+    const res = await app.request(
+      `/api/sites/${site.id}/robots-overrides`,
+      {
+        method: 'PUT',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ canonical_origin: 'not-a-url', mode: 'enforce' }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json() as any;
+    expect(body.error.code).toBe('validation_error');
+  });
 });
 
 describe('DELETE /api/sites/:id/robots-overrides (revert to enforce)', () => {

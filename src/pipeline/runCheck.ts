@@ -199,36 +199,44 @@ export async function runMonitorCheck(
   }
 
   // 6. Fetcher Policy に従った fetch (ADR-0005)
+  // lease.granted 後は (fetch 自体を含め) 例外が起きても必ず limiter.release() を呼ぶ
+  // (host lease のリーク防止)。outcome が確定する前に例外が起きた場合は internal_error として
+  // release し、finally 後に rethrow して呼び出し元 (DO/alarm handler) の既存エラーハンドリングに委ねる。
   const latestSnapshot = await getLatestSnapshotForTarget(db, target.id);
-  const { outcome, lastAttemptId } = await fetchTargetThroughPolicy(ctx, target.id, source.url, {
-    etag: latestSnapshot?.etag ?? null,
-    lastModified: latestSnapshot?.lastModified ?? null,
-  });
+  let outcome: Awaited<ReturnType<typeof fetchTargetThroughPolicy>>['outcome'] | undefined;
+  try {
+    const fetchResult = await fetchTargetThroughPolicy(ctx, target.id, source.url, {
+      etag: latestSnapshot?.etag ?? null,
+      lastModified: latestSnapshot?.lastModified ?? null,
+    });
+    outcome = fetchResult.outcome;
+    const { lastAttemptId } = fetchResult;
 
-  await limiter.release(lease.leaseId as string, {
-    failureClass: outcome.ok ? null : outcome.failureClass,
-    retryAfterSeconds: outcome.ok ? null : outcome.retryAfterSeconds,
-  });
+    if (!outcome.ok) {
+      return finishJob(ctx, 'failed');
+    }
 
-  if (!outcome.ok) {
-    return finishJob(ctx, 'failed');
-  }
+    await setTargetLastChecked(db, target.id, nowIso());
 
-  await setTargetLastChecked(db, target.id, nowIso());
+    // 304 Not Modified: 変更なしの成功。新規 Snapshot は作らない。
+    if (outcome.notModified || !outcome.body) {
+      return finishJob(ctx, 'succeeded');
+    }
 
-  // 304 Not Modified: 変更なしの成功。新規 Snapshot は作らない。
-  if (outcome.notModified || !outcome.body) {
+    // 7. Source 種別ごとの内容処理
+    if (source.type === 'page') {
+      await processPageContent(ctx, target, latestSnapshot, lastAttemptId, outcome as FetchSuccess, outcome.body);
+    } else {
+      await processFeedContent(ctx, target, lastAttemptId, outcome as FetchSuccess, outcome.body);
+    }
+
+    // 8. 通知ファンアウトは pageContent/feed 内で change 挿入時に完了済み。
+    // 9. Job 確定 + 次回スケジュール
     return finishJob(ctx, 'succeeded');
+  } finally {
+    await limiter.release(lease.leaseId as string, {
+      failureClass: outcome ? (outcome.ok ? null : outcome.failureClass) : 'internal_error',
+      retryAfterSeconds: outcome ? (outcome.ok ? null : outcome.retryAfterSeconds) : null,
+    });
   }
-
-  // 7. Source 種別ごとの内容処理
-  if (source.type === 'page') {
-    await processPageContent(ctx, target, latestSnapshot, lastAttemptId, outcome as FetchSuccess, outcome.body);
-  } else {
-    await processFeedContent(ctx, target, lastAttemptId, outcome as FetchSuccess, outcome.body);
-  }
-
-  // 8. 通知ファンアウトは pageContent/feed 内で change 挿入時に完了済み。
-  // 9. Job 確定 + 次回スケジュール
-  return finishJob(ctx, 'succeeded');
 }

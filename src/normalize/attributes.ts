@@ -24,7 +24,21 @@ export function isDynamicAttribute(name: string, overrideList?: readonly string[
   return DEFAULT_DYNAMIC_ATTRIBUTE_PATTERNS.some((pattern) => pattern.test(lowerName));
 }
 
-/** 属性名の配列をアルファベット順 (Unicode コードポイント順) にソートする。 */
+/**
+ * 属性名の配列をアルファベット順 (Unicode コードポイント順) にソートする。
+ *
+ * `<`/`>` による文字列比較は UTF-16 コード単位順であり、サロゲートペア (BMP 外の
+ * コードポイント) を含む文字列では真の Unicode コードポイント順と食い違うため、
+ * コードポイント単位で比較する。
+ */
 export function sortAttributeNames(names: readonly string[]): string[] {
-  return [...names].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return [...names].sort((a, b) => {
+    const ac = Array.from(a, (ch) => ch.codePointAt(0)!);
+    const bc = Array.from(b, (ch) => ch.codePointAt(0)!);
+    const len = Math.min(ac.length, bc.length);
+    for (let i = 0; i < len; i += 1) {
+      if (ac[i] !== bc[i]) return ac[i]! - bc[i]!;
+    }
+    return ac.length - bc.length;
+  });
 }

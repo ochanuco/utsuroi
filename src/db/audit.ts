@@ -41,11 +41,12 @@ export async function recordAuditEvent(
 
 export async function listAuditEventsBySubject(
   db: D1Database,
-  subject: string
+  subject: string,
+  limit = 200
 ): Promise<AuditEventRow[]> {
   const { results } = await db
-    .prepare(`SELECT * FROM audit_events WHERE subject = ? ORDER BY created_at ASC`)
-    .bind(subject)
+    .prepare(`SELECT * FROM audit_events WHERE subject = ? ORDER BY created_at ASC LIMIT ?`)
+    .bind(subject, limit)
     .all();
   return results.map(mapRow);
 }
@@ -56,4 +57,9 @@ export async function listRecentAuditEvents(db: D1Database, limit = 100): Promis
     .bind(limit)
     .all();
   return results.map(mapRow);
+}
+
+export async function countAuditEvents(db: D1Database): Promise<number> {
+  const row = await db.prepare(`SELECT COUNT(*) as count FROM audit_events`).first<{ count: number }>();
+  return row?.count ?? 0;
 }

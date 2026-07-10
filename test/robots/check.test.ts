@@ -104,6 +104,41 @@ describe('checkRobots', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it('bounds the robots.txt fetch with a timeout and treats an aborted fetch as unavailable/disallowed', async () => {
+    const fetchImpl = vi.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          expect(init?.signal).toBeInstanceOf(AbortSignal);
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+          });
+        }),
+    );
+
+    const decision = await checkRobots('https://example.com', 'https://example.com/anything', {
+      fetchImpl,
+      timeoutMs: 50,
+    });
+    expect(decision.unavailable).toBe(true);
+    expect(decision.verdict).toBe('disallowed');
+    expect(decision.userAgentGroup).toBe('unavailable');
+  });
+
+  it('treats a 2xx response whose body read/parse throws as unavailable rather than rejecting', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('User-agent: *\n'));
+        controller.error(new Error('simulated stream failure'));
+      },
+    });
+    const response = new Response(stream, { status: 200 });
+    const fetchImpl = vi.fn(async () => response);
+
+    await expect(
+      checkRobots('https://example.com', 'https://example.com/anything', { fetchImpl }),
+    ).resolves.toMatchObject({ unavailable: true, verdict: 'disallowed' });
+  });
+
   it('does not treat a Sitemap directive as blanket allow end-to-end', async () => {
     const fetchImpl = vi.fn(async () =>
       textResponse(200, ['User-agent: *', 'Disallow: /', 'Sitemap: https://example.com/sitemap.xml'].join('\n')),

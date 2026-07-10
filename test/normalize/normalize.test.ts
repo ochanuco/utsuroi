@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeHtml } from '../../src/normalize';
+import { sortAttributeNames } from '../../src/normalize/attributes';
 
 function toBytes(html: string): Uint8Array {
   return new TextEncoder().encode(html);
@@ -105,9 +106,14 @@ describe('normalizeHtml', () => {
   it('does not change normalizedHash when only a nonce attribute changes', async () => {
     const htmlA = `<html><body><script nonce="AAAA111">void 0</script><p>Same content</p></body></html>`;
     const htmlB = `<html><body><script nonce="ZZZZ999">void 0</script><p>Same content</p></body></html>`;
-    const resultA = await normalizeHtml(toBytes(htmlA), { baseUrl });
-    const resultB = await normalizeHtml(toBytes(htmlB), { baseUrl });
+    // stripScripts: false so the <script> element (and its nonce attribute) is actually
+    // present in the normalized tree, rather than being removed before normalization
+    // even considers it -- otherwise this test wouldn't exercise nonce stripping at all.
+    const resultA = await normalizeHtml(toBytes(htmlA), { baseUrl, stripScripts: false });
+    const resultB = await normalizeHtml(toBytes(htmlB), { baseUrl, stripScripts: false });
     expect(resultA.rawHash).not.toBe(resultB.rawHash);
+    expect(resultA.normalizedHtml).toContain('<script');
+    expect(resultA.normalizedHtml).not.toContain('nonce=');
     expect(resultA.normalizedHash).toBe(resultB.normalizedHash);
   });
 
@@ -129,6 +135,22 @@ describe('normalizeHtml', () => {
     expect(result.normalizedHtml).not.toContain('data-csrf-token');
     expect(result.normalizedHtml).not.toContain('data-timestamp');
     expect(result.normalizedHtml).toContain('data-keep');
+  });
+
+  it('sorts by Unicode code point rather than UTF-16 code unit for astral characters', () => {
+    // U+F8FF (BMP, private-use area) is a single UTF-16 code unit (0xF8FF).
+    const bmpChar = '\u{F8FF}';
+    // U+10000 (astral / supplementary plane) is a surrogate pair whose first
+    // code unit is 0xD800 -- lower than 0xF8FF despite the code point itself
+    // (0x10000) being higher.
+    const astralChar = '\u{10000}';
+
+    // Sanity check: naive UTF-16 code-unit `<` comparison disagrees with true
+    // Unicode code point order for this pair (proves the bug would matter).
+    expect(astralChar < bmpChar).toBe(true);
+
+    // True code point order: U+F8FF (63743) < U+10000 (65536).
+    expect(sortAttributeNames([astralChar, bmpChar])).toEqual([bmpChar, astralChar]);
   });
 
   it('extracts plain text with newlines at block element boundaries', async () => {

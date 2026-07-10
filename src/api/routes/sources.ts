@@ -6,9 +6,9 @@ import { z } from 'zod';
 import type { Env } from '../../shared/env';
 import type { DnsResolver } from '../../net';
 import { checkUrlForSsrf, resolveAndCheck } from '../../net';
-import { createSource, getSite, getSource, listSourcesBySite } from '../../db';
+import { countSourcesBySite, createSource, getSite, getSource, listSourcesBySite } from '../../db';
 import { badRequest, notFound } from '../errors';
-import { paginate, parsePagination, parseWith, readJsonBody } from '../http';
+import { parsePagination, parseWith, readJsonBody } from '../http';
 import { serializeSource } from '../serialize';
 
 const createSourceSchema = z.object({
@@ -54,8 +54,12 @@ export function sourcesRoutes(opts: { ssrfResolver?: DnsResolver } = {}) {
     if (!site) throw notFound('site_not_found', 'site not found');
 
     const pagination = parsePagination(c);
-    const sources = await listSourcesBySite(c.env.DB, siteId);
-    return c.json({ items: paginate(sources, pagination).map(serializeSource), total: sources.length });
+    const sources = await listSourcesBySite(c.env.DB, siteId, {
+      limit: pagination.limit,
+      offset: pagination.offset,
+    });
+    const total = await countSourcesBySite(c.env.DB, siteId);
+    return c.json({ items: sources.map(serializeSource), total });
   });
 
   return router;

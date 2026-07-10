@@ -82,7 +82,7 @@ describe('processNotifyBatch', () => {
     expect(message.ackCount).toBe(1);
   });
 
-  it('retries respecting Retry-After on 429 without marking the delivery failed', async () => {
+  it('marks failed (not dead), increments attemptCount, and retries respecting Retry-After on 429', async () => {
     const store = new FakeNotifyStore();
     store.seed(makeDelivery());
     const message = makeMessage({ deliveryId: 'delivery-1' });
@@ -93,9 +93,34 @@ describe('processNotifyBatch', () => {
 
     expect(message.ackCount).toBe(0);
     expect(message.retryCalls).toEqual([{ delaySeconds: 12 }]);
-    // markFailed は呼ばれない -> attemptCount は変わらず、pending のまま
+    // markFailed(dead:false) が呼ばれ、attemptCount がインクリメントされる (pending のまま)。
+    // これにより maxAttempts に達した際に dead へ遷移できる。
     expect(store.statusOf('delivery-1')).toBe('pending');
-    expect(store.attemptCountOf('delivery-1')).toBe(0);
+    expect(store.attemptCountOf('delivery-1')).toBe(1);
+    expect(store.lastErrorOf('delivery-1')).not.toContain(WEBHOOK_URL);
+  });
+
+  it('marks the delivery dead once repeated 429s reach maxAttempts, instead of staying pending forever', async () => {
+    const store = new FakeNotifyStore();
+    store.seed(makeDelivery());
+    const message = makeMessage({ deliveryId: 'delivery-1' });
+    const fetchStub = async () =>
+      new Response(null, { status: 429, headers: { 'retry-after': '1' } });
+
+    // デフォルト maxAttempts (5) に達するまで 429 を繰り返す。
+    for (let i = 0; i < 5; i += 1) {
+      await processNotifyBatch(batchOf(message), store, { fetch: fetchStub });
+    }
+
+    expect(store.attemptCountOf('delivery-1')).toBe(5);
+    expect(store.statusOf('delivery-1')).toBe('pending');
+    expect(message.ackCount).toBe(0);
+
+    // 6 回目の呼び出しで attemptCount >= maxAttempts となり、dead としてマークされ ack される。
+    await processNotifyBatch(batchOf(message), store, { fetch: fetchStub });
+
+    expect(store.statusOf('delivery-1')).toBe('dead');
+    expect(message.ackCount).toBe(1);
   });
 
   it('marks failed (not dead) and retries on a retryable (5xx) failure', async () => {

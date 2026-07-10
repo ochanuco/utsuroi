@@ -29,10 +29,22 @@ export async function getSource(db: D1Database, id: string): Promise<SourceRow |
   return row ? mapRow(row) : null;
 }
 
-export async function listSourcesBySite(db: D1Database, siteId: string): Promise<SourceRow[]> {
-  const { results } = await db
-    .prepare(`SELECT * FROM sources WHERE site_id = ? ORDER BY created_at ASC`)
-    .bind(siteId)
-    .all();
+export async function listSourcesBySite(
+  db: D1Database,
+  siteId: string,
+  pagination?: { limit: number; offset: number }
+): Promise<SourceRow[]> {
+  const limitClause = pagination ? ` LIMIT ? OFFSET ?` : '';
+  const stmt = db.prepare(`SELECT * FROM sources WHERE site_id = ? ORDER BY created_at ASC${limitClause}`);
+  const bound = pagination ? stmt.bind(siteId, pagination.limit, pagination.offset) : stmt.bind(siteId);
+  const { results } = await bound.all();
   return results.map(mapRow);
+}
+
+export async function countSourcesBySite(db: D1Database, siteId: string): Promise<number> {
+  const row = await db
+    .prepare(`SELECT COUNT(*) as count FROM sources WHERE site_id = ?`)
+    .bind(siteId)
+    .first<{ count: number }>();
+  return row?.count ?? 0;
 }

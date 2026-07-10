@@ -70,4 +70,22 @@ describe('parseRobotsTxt', () => {
     expect(rules.groups).toHaveLength(1);
     expect(rules.groups[0]?.rules).toEqual([{ directive: 'disallow', pattern: '/a' }]);
   });
+
+  it('merges two user-agent lines separated by an unknown directive into a single group (RFC 9309)', () => {
+    const rules = parseRobotsTxt(
+      ['User-agent: a', 'Crawl-delay: 5', 'User-agent: b', 'Disallow: /'].join('\n'),
+    );
+    expect(rules.groups).toHaveLength(1);
+    expect(rules.groups[0]?.userAgents).toEqual(['a', 'b']);
+    expect(rules.groups[0]?.rules).toEqual([{ directive: 'disallow', pattern: '/' }]);
+  });
+
+  it('merges two user-agent lines separated by a Host directive into a single group', () => {
+    const rules = parseRobotsTxt(
+      ['User-agent: a', 'Host: example.com', 'User-agent: b', 'Disallow: /'].join('\n'),
+    );
+    expect(rules.groups).toHaveLength(1);
+    expect(rules.groups[0]?.userAgents).toEqual(['a', 'b']);
+    expect(rules.groups[0]?.rules).toEqual([{ directive: 'disallow', pattern: '/' }]);
+  });
 });

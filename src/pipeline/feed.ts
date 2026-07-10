@@ -41,6 +41,14 @@ async function targetExists(db: D1Database, monitorId: string, url: string): Pro
   return row !== null;
 }
 
+/**
+ * change の subscription マッチ + delivery 作成 + NOTIFY_QUEUE enqueue を行う。
+ * createDeliveryIfNew は冪等 (insert-if-new) なので、insertChangeIfNew が
+ * dedupeKey 重複 (inserted:false) を返した場合でも安全に呼べる — 前回実行が
+ * change 挿入後・delivery/enqueue 前にクラッシュしたケースの at-least-once 復旧のため、
+ * 呼び出し側は inserted の真偽に関わらず常にこの関数を呼ぶこと (changeIds への追加は
+ * 呼び出し側で inserted.inserted の場合のみ行う)。
+ */
 async function notifyForChange(ctx: CheckContext, change: ChangeRow): Promise<void> {
   const subs = await listMatchingSubscriptions(ctx.db, {
     siteId: ctx.site.id,
@@ -53,7 +61,6 @@ async function notifyForChange(ctx: CheckContext, change: ChangeRow): Promise<vo
       await ctx.env.NOTIFY_QUEUE.send({ deliveryId: delivery.row.id });
     }
   }
-  ctx.changeIds.push(change.id);
 }
 
 /** rss/atom/sitemap の item 一覧を Target 化し、新規/更新を検出して通知する */
@@ -82,7 +89,8 @@ export async function processFeedItems(ctx: CheckContext, items: FeedItem[]): Pr
         title: item.title,
         detectedAt: nowIso,
       });
-      if (inserted.inserted) await notifyForChange(ctx, inserted.row);
+      await notifyForChange(ctx, inserted.row);
+      if (inserted.inserted) ctx.changeIds.push(inserted.row.id);
       continue;
     }
 
@@ -98,7 +106,8 @@ export async function processFeedItems(ctx: CheckContext, items: FeedItem[]): Pr
         title: item.title,
         detectedAt: nowIso,
       });
-      if (inserted.inserted) await notifyForChange(ctx, inserted.row);
+      await notifyForChange(ctx, inserted.row);
+      if (inserted.inserted) ctx.changeIds.push(inserted.row.id);
     }
   }
 }
@@ -194,7 +203,15 @@ export async function processSitemapIndexChildren(
       etag: latest?.etag ?? null,
       lastModified: latest?.lastModified ?? null,
     });
-    if (!outcome.ok || outcome.notModified || !outcome.body) continue;
+    // フェッチ自体が失敗した場合のみ last_checked_at を更新せずスキップする。
+    // 304 Not Modified は「子 Sitemap の正常なチェック」なので last_checked_at は更新する
+    // (パースする新規本文が無いため items 処理だけスキップする)。
+    if (!outcome.ok) continue;
+    const checkedAtIso = new Date(ctx.now()).toISOString();
+    if (outcome.notModified || !outcome.body) {
+      await setTargetLastChecked(ctx.db, childTarget.id, checkedAtIso);
+      continue;
+    }
 
     let parsed;
     try {
@@ -202,7 +219,7 @@ export async function processSitemapIndexChildren(
     } catch {
       continue;
     }
-    await setTargetLastChecked(ctx.db, childTarget.id, new Date(ctx.now()).toISOString());
+    await setTargetLastChecked(ctx.db, childTarget.id, checkedAtIso);
     await processFeedItems(ctx, parsed.items);
   }
 }

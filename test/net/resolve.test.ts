@@ -74,9 +74,77 @@ describe('resolveAndCheck', () => {
     expect(fetchImpl).toHaveBeenCalled();
   });
 
-  it('allows when the resolver returns no addresses (cannot determine, defers to actual fetch)', async () => {
+  it('denies when the resolver returns no addresses (fail closed, not deferred to the actual fetch)', async () => {
     const resolver = stubResolver({});
     const result = await resolveAndCheck('https://nowhere.example.com/', { resolver });
-    expect(result.allowed).toBe(true);
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('dns_resolution_failed');
+  });
+
+  it('denies with dns_resolution_failed when the custom resolver throws', async () => {
+    const resolver: DnsResolver = {
+      resolve: vi.fn(async () => {
+        throw new Error('boom');
+      }),
+    };
+    const result = await resolveAndCheck('https://throws.example.com/', { resolver });
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('dns_resolution_failed');
+  });
+
+  it('denies with dns_resolution_failed when the DoH endpoint returns a non-2xx response', async () => {
+    const fetchImpl = vi.fn(async () => new Response('bad gateway', { status: 502 }));
+    const result = await resolveAndCheck('https://doh-down.example.com/', { fetchImpl });
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('dns_resolution_failed');
+  });
+
+  it('denies with dns_resolution_failed when the DoH response Status indicates a DNS error', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ Status: 2, Answer: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/dns-json' },
+        }),
+    );
+    const result = await resolveAndCheck('https://servfail.example.com/', { fetchImpl });
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('dns_resolution_failed');
+  });
+
+  it('denies with dns_resolution_failed when the DoH fetch throws (e.g. network error or timeout)', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('network error');
+    });
+    const result = await resolveAndCheck('https://unreachable-doh.example.com/', { fetchImpl });
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('dns_resolution_failed');
+  });
+
+  it('denies with dns_resolution_failed when the DoH response is valid (2xx, Status 0) but has no answers at all', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ Status: 0, Answer: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/dns-json' },
+        }),
+    );
+    const result = await resolveAndCheck('https://no-records.example.com/', { fetchImpl });
+    // 挙動反転: 以前は「解決結果なし=判定不能=allow」だったが、fail-closed方針への変更により
+    // 正常応答であっても解決先が0件ならdenyとする。
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('dns_resolution_failed');
+  });
+
+  it('passes an AbortSignal-bearing timeout to the DoH fetch call', async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      return new Response(JSON.stringify({ Status: 0, Answer: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/dns-json' },
+      });
+    });
+    await resolveAndCheck('https://timeout-check.example.com/', { fetchImpl });
+    expect(fetchImpl).toHaveBeenCalled();
   });
 });
