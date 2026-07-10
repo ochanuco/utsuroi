@@ -93,11 +93,27 @@ export function fieldRow(children) {
   return el('div', { class: 'field-row' }, children);
 }
 
+let fieldIdCounter = 0;
+
 export function field(labelText, inputNode) {
   const wrap = el('div', { class: 'field' });
-  wrap.appendChild(el('label', { text: labelText }));
+  if (!inputNode.id) {
+    fieldIdCounter += 1;
+    inputNode.id = `field-${fieldIdCounter}`;
+  }
+  wrap.appendChild(el('label', { attrs: { for: inputNode.id }, text: labelText }));
   wrap.appendChild(inputNode);
   return wrap;
+}
+
+/**
+ * 一覧取得API応答 { items, total } を受け取り、limit指定によって暗黙に切り捨てられている
+ * 場合 (items.length < total) に注記要素を返す。切り捨てが無ければ null。
+ */
+export function truncationNotice(data) {
+  if (!data || typeof data.total !== 'number' || !Array.isArray(data.items)) return null;
+  if (data.items.length >= data.total) return null;
+  return el('p', { class: 'muted', text: `全${data.total}件中${data.items.length}件を表示` });
 }
 
 export function navigate(hash) {

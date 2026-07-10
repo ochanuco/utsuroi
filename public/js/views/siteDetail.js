@@ -19,6 +19,7 @@ import {
   renderError,
   appendError,
   navigate,
+  truncationNotice,
 } from '../util.js';
 
 // src/api/routes/sites.ts の FAILURE_CLASSES と揃える (proceed_on 選択肢)
@@ -48,7 +49,17 @@ async function renderSourcesSection(container, siteId, onSourcesChanged) {
   container.appendChild(s);
   renderLoading(s);
 
-  const data = await api.get(`/sources?site_id=${encodeURIComponent(siteId)}&limit=200`);
+  let data;
+  try {
+    data = await api.get(`/sources?site_id=${encodeURIComponent(siteId)}&limit=200`);
+  } catch (err) {
+    // 取得失敗と0件を区別する: ここで失敗を確定させ、呼び出し元 (Monitorsセクション) にも
+    // 「取得失敗」であることを伝播できるよう { failed: true } を返す (例外は投げない)。
+    clear(s);
+    s.appendChild(el('h3', { text: 'Sources' }));
+    appendError(s, err);
+    return { sources: [], failed: true };
+  }
   clear(s);
   s.appendChild(el('h3', { text: 'Sources' }));
 
@@ -68,10 +79,16 @@ async function renderSourcesSection(container, siteId, onSourcesChanged) {
         if (!url) return;
         try {
           await api.post('/sources', { site_id: siteId, type: typeSelect.value, url });
-          urlInput.value = '';
-          await onSourcesChanged();
         } catch (err) {
           errorEl.textContent = `作成に失敗しました: ${err.message}`;
+          errorEl.classList.remove('hidden');
+          return;
+        }
+        urlInput.value = '';
+        try {
+          await onSourcesChanged();
+        } catch (err) {
+          errorEl.textContent = `一覧の更新に失敗しました（作成自体は成功しています）: ${err.message}`;
           errorEl.classList.remove('hidden');
         }
       },
@@ -84,7 +101,7 @@ async function renderSourcesSection(container, siteId, onSourcesChanged) {
 
   if (data.items.length === 0) {
     s.appendChild(el('p', { class: 'empty', text: 'Sourceがまだ登録されていません。' }));
-    return { sources: [] };
+    return { sources: [], failed: false };
   }
 
   const table = el('table');
@@ -99,7 +116,9 @@ async function renderSourcesSection(container, siteId, onSourcesChanged) {
   }
   table.appendChild(tbody);
   s.appendChild(table);
-  return { sources: data.items };
+  const notice = truncationNotice(data);
+  if (notice) s.appendChild(notice);
+  return { sources: data.items, failed: false };
 }
 
 // --- Fetcher Policy ----------------------------------------------------------
@@ -211,11 +230,12 @@ async function renderFetcherPolicySection(container, siteId) {
         };
         try {
           await api.put(`/sites/${encodeURIComponent(siteId)}/fetcher-policy`, body);
-          await renderFetcherPolicySectionReload();
         } catch (err) {
           errorEl.textContent = `保存に失敗しました: ${err.message}`;
           errorEl.classList.remove('hidden');
+          return;
         }
+        await renderFetcherPolicySectionReload();
       },
     },
   });
@@ -250,7 +270,16 @@ async function renderFetcherPolicySection(container, siteId) {
 
   async function renderFetcherPolicySectionReload() {
     container.removeChild(s);
-    await renderFetcherPolicySection(container, siteId);
+    try {
+      await renderFetcherPolicySection(container, siteId);
+    } catch (err) {
+      // 保存自体は成功しているため、再描画失敗は別メッセージで通知する。
+      // sを既に取り除いているため、代わりのセクションを挿入してエラーを表示する
+      // (何も挿入しないとセクション自体が消えたままになってしまう)。
+      const fallback = section('Fetcher Policy', []);
+      container.appendChild(fallback);
+      fallback.appendChild(el('p', { class: 'error', text: `保存は成功しましたが、表示の更新に失敗しました: ${err.message}` }));
+    }
   }
 }
 
@@ -262,24 +291,37 @@ async function findRobotsEvaluationForOrigin(siteId, origin) {
   // このSiteのMonitorのうち、対象originに紐づくSourceを持つものを探し、その最新評価を代表値として表示する。
   // (判断点: report参照)
   const monitorsData = await api.get(`/monitors?site_id=${encodeURIComponent(siteId)}&limit=200`);
-  for (const m of monitorsData.items) {
-    let source;
-    try {
-      source = await api.get(`/sources/${encodeURIComponent(m.source_id)}`);
-    } catch {
-      continue;
-    }
-    let sourceOrigin;
-    try {
-      sourceOrigin = new URL(source.url).origin;
-    } catch {
-      continue;
-    }
-    if (sourceOrigin !== origin) continue;
-    const detail = await api.get(`/monitors/${encodeURIComponent(m.id)}`);
-    if (detail.robots_evaluation) return detail.robots_evaluation;
-  }
-  return null;
+
+  // Source取得とorigin判定を並列化する。個々のSource取得/URL解析の失敗は従来どおり
+  // そのMonitorをスキップする (継続) 扱いとし、エラーを外へ伝播させない。
+  const originMatches = await Promise.all(
+    monitorsData.items.map(async (m) => {
+      let source;
+      try {
+        source = await api.get(`/sources/${encodeURIComponent(m.source_id)}`);
+      } catch {
+        return null;
+      }
+      let sourceOrigin;
+      try {
+        sourceOrigin = new URL(source.url).origin;
+      } catch {
+        return null;
+      }
+      return sourceOrigin === origin ? m : null;
+    })
+  );
+  const matchedMonitors = originMatches.filter((m) => m !== null);
+
+  // 一致したMonitorのrobots評価取得も並列化する。ここは従来どおりエラーを
+  // そのまま伝播させる (呼び出し元 refreshJudgment() が捕捉して表示する)。
+  const evaluations = await Promise.all(
+    matchedMonitors.map(async (m) => {
+      const detail = await api.get(`/monitors/${encodeURIComponent(m.id)}`);
+      return detail.robots_evaluation ?? null;
+    })
+  );
+  return evaluations.find((e) => e) ?? null;
 }
 
 async function renderRobotsOverridesSection(container, site) {
@@ -436,13 +478,14 @@ async function renderRobotsOverridesSection(container, site) {
             reason,
             confirm: true,
           });
-          reasonInput.value = '';
-          confirmCheckbox.checked = false;
-          await reload();
         } catch (err) {
           enableError.textContent = `有効化に失敗しました: ${err.message}`;
           enableError.classList.remove('hidden');
+          return;
         }
+        reasonInput.value = '';
+        confirmCheckbox.checked = false;
+        await reload();
       },
     },
   });
@@ -461,13 +504,20 @@ async function renderRobotsOverridesSection(container, site) {
 
   async function reload() {
     container.removeChild(s);
-    await renderRobotsOverridesSection(container, site);
+    try {
+      await renderRobotsOverridesSection(container, site);
+    } catch (err) {
+      // 有効化/解除自体は成功しているため、再描画失敗は別メッセージで通知する。
+      const fallback = section('robots.txt Override', []);
+      container.appendChild(fallback);
+      fallback.appendChild(el('p', { class: 'error', text: `更新は成功しましたが、表示の更新に失敗しました: ${err.message}` }));
+    }
   }
 }
 
 // --- Monitors ----------------------------------------------------------------
 
-async function renderMonitorsSection(container, siteId, sources) {
+async function renderMonitorsSection(container, siteId, sources, sourcesFetchFailed = false) {
   const s = section('Monitors', []);
   container.appendChild(s);
   renderLoading(s);
@@ -485,7 +535,13 @@ async function renderMonitorsSection(container, siteId, sources) {
   intervalInput.value = '3600';
   const errorEl = el('p', { class: 'error hidden' });
 
-  if (sources.length === 0) {
+  if (sourcesFetchFailed) {
+    // Sources取得の失敗と「Sourceが0件」を区別する: 前者はMonitor作成不可の理由が
+    // 取得失敗であることを明示し、後者 (0件) と異なる文言で案内する。
+    s.appendChild(
+      el('p', { class: 'error', text: 'Source一覧の取得に失敗しているため、Monitorを作成できません。ページを再読み込みしてください。' })
+    );
+  } else if (sources.length === 0) {
     s.appendChild(el('p', { class: 'empty', text: 'Monitorを作成するには先にSourceを登録してください。' }));
   } else {
     const form = el('form', {
@@ -498,11 +554,19 @@ async function renderMonitorsSection(container, siteId, sources) {
               source_id: sourceSelect.value,
               interval_seconds: Number(intervalInput.value),
             });
-            container.removeChild(s);
-            await renderMonitorsSection(container, siteId, sources);
           } catch (err) {
             errorEl.textContent = `作成に失敗しました: ${err.message}`;
             errorEl.classList.remove('hidden');
+            return;
+          }
+          container.removeChild(s);
+          try {
+            await renderMonitorsSection(container, siteId, sources, sourcesFetchFailed);
+          } catch (err) {
+            // 作成自体は成功しているため、再描画失敗は別メッセージで通知する。
+            const fallback = section('Monitors', []);
+            container.appendChild(fallback);
+            fallback.appendChild(el('p', { class: 'error', text: `作成は成功しましたが、一覧の更新に失敗しました: ${err.message}` }));
           }
         },
       },
@@ -550,6 +614,8 @@ async function renderMonitorsSection(container, siteId, sources) {
   }
   table.appendChild(tbody);
   s.appendChild(table);
+  const notice = truncationNotice(data);
+  if (notice) s.appendChild(notice);
 }
 
 // --- top-level view -----------------------------------------------------------
@@ -575,38 +641,41 @@ async function siteDetailView(container, params) {
   kv.appendChild(el('dd', { text: formatDateTime(site.created_at) }));
   container.appendChild(section(null, [kv]));
 
-  let sources = [];
-  try {
-    const result = await renderSourcesSection(container, siteId, async () => {
-      // Source作成後はSites詳細ページ全体を再レンダリングし、Monitor作成フォームの
-      // Source候補一覧などにも反映させる。
-      await reloadAll();
-    });
-    sources = result.sources;
-  } catch (err) {
-    appendError(container, err);
-  }
-
-  try {
-    await renderFetcherPolicySection(container, siteId);
-  } catch (err) {
-    appendError(container, err);
-  }
-
-  try {
-    await renderRobotsOverridesSection(container, site);
-  } catch (err) {
-    appendError(container, err);
-  }
-
-  try {
-    await renderMonitorsSection(container, siteId, sources);
-  } catch (err) {
-    appendError(container, err);
-  }
-
   async function reloadAll() {
+    // Source作成後はSites詳細ページ全体を再レンダリングし、Monitor作成フォームの
+    // Source候補一覧などにも反映させる。
     await siteDetailView(container, params);
+  }
+
+  // Sources / Fetcher Policy / robots Override の取得は互いに独立しているため並列実行する
+  // (Monitorsのみ、Sources取得結果 (sources一覧・取得失敗フラグ) に依存するため後段で実行する)。
+  // 各セクション自身が自分の描画領域へエラーを出すため、ここでの失敗処理は従来どおり維持する。
+  const [sourcesResult, fetcherResult, robotsResult] = await Promise.allSettled([
+    renderSourcesSection(container, siteId, reloadAll),
+    renderFetcherPolicySection(container, siteId),
+    renderRobotsOverridesSection(container, site),
+  ]);
+
+  let sources = [];
+  let sourcesFetchFailed = false;
+  if (sourcesResult.status === 'fulfilled') {
+    sources = sourcesResult.value.sources;
+    sourcesFetchFailed = sourcesResult.value.failed;
+  } else {
+    appendError(container, sourcesResult.reason);
+    sourcesFetchFailed = true;
+  }
+  if (fetcherResult.status === 'rejected') {
+    appendError(container, fetcherResult.reason);
+  }
+  if (robotsResult.status === 'rejected') {
+    appendError(container, robotsResult.reason);
+  }
+
+  try {
+    await renderMonitorsSection(container, siteId, sources, sourcesFetchFailed);
+  } catch (err) {
+    appendError(container, err);
   }
 }
 

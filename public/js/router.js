@@ -20,7 +20,13 @@ function matchRoute(path) {
     for (let i = 0; i < patternParts.length; i++) {
       const part = patternParts[i];
       if (part.startsWith(':')) {
-        params[part.slice(1)] = decodeURIComponent(pathParts[i]);
+        try {
+          params[part.slice(1)] = decodeURIComponent(pathParts[i]);
+        } catch {
+          // 不正な percent-encoding (例: "%") はこのルートに非マッチとして扱う
+          ok = false;
+          break;
+        }
       } else if (part !== pathParts[i]) {
         ok = false;
         break;
@@ -32,8 +38,12 @@ function matchRoute(path) {
 }
 
 let attachedContainer = null;
+// hashchangeのたびにインクリメントする世代カウンタ。非同期handlerの完了時にこれが
+// 変わっていれば、その間に別のrenderが開始した (=古い結果) とみなし、DOM更新を捨てる。
+let renderGeneration = 0;
 
 async function render(container) {
+  const generation = ++renderGeneration;
   const hash = location.hash.replace(/^#/, '');
   const [path, queryStr] = hash.split('?');
   const query = new URLSearchParams(queryStr ?? '');
@@ -47,6 +57,7 @@ async function render(container) {
   try {
     await match.handler(container, match.params, query);
   } catch (err) {
+    if (generation !== renderGeneration) return; // 既に新しいrenderが開始済み
     renderError(container, err);
   }
 }

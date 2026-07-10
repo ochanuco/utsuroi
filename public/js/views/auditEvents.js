@@ -3,7 +3,7 @@
  */
 import { api } from '../api.js';
 import { registerRoute } from '../router.js';
-import { el, clear, section, formatDateTime, renderLoading, renderError } from '../util.js';
+import { el, clear, section, formatDateTime, renderLoading, renderError, truncationNotice } from '../util.js';
 
 async function auditEventsView(container) {
   clear(container);
@@ -28,9 +28,9 @@ async function auditEventsView(container) {
       el('thead', {}, [
         el('tr', {}, [
           el('th', { text: '日時' }),
-          el('th', { text: 'actor' }),
-          el('th', { text: 'action' }),
-          el('th', { text: 'subject' }),
+          el('th', { text: '実行者' }),
+          el('th', { text: '操作' }),
+          el('th', { text: '対象' }),
           el('th', { text: '理由' }),
         ]),
       ])
@@ -49,6 +49,8 @@ async function auditEventsView(container) {
     }
     table.appendChild(tbody);
     s.appendChild(table);
+    const notice = truncationNotice(data);
+    if (notice) s.appendChild(notice);
   } catch (err) {
     clear(s);
     renderError(s, err);

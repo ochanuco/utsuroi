@@ -10,6 +10,8 @@ export function getToken() {
   return localStorage.getItem(TOKEN_KEY);
 }
 
+// 割り切り: 個人用単一管理者ツールのため、トークンは localStorage に平文保存する
+// (HttpOnly Cookie化はサーバー側ログイン実装を伴うためスコープ外。report参照)。
 export function setToken(token) {
   localStorage.setItem(TOKEN_KEY, token);
 }
@@ -41,7 +43,15 @@ async function request(path, { method = 'GET', body, raw = false } = {}) {
     payload = JSON.stringify(body);
   }
 
-  const res = await fetch(`/api${path}`, { method, headers, body: payload });
+  let res;
+  try {
+    res = await fetch(`/api${path}`, { method, headers, body: payload, signal: AbortSignal.timeout(30000) });
+  } catch (err) {
+    if (err.name === 'AbortError' || err.name === 'TimeoutError') {
+      throw new ApiError(0, 'timeout', 'リクエストがタイムアウトしました (30秒)。ネットワークを確認してください。');
+    }
+    throw err;
+  }
 
   if (res.status === 401) {
     clearToken();
