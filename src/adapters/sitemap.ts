@@ -43,13 +43,17 @@ export function buildSitemapIndexResult(
   opts: { baseUrl: string },
 ): AdapterParseResult {
   const childSitemaps: string[] = [];
+  const seen = new Set<string>();
 
   for (const raw of asArray(sitemapindex.sitemap)) {
     if (!raw || typeof raw !== 'object') continue;
     const node = raw as Record<string, unknown>;
     const locText = textOf(node.loc);
     if (!locText) continue;
-    childSitemaps.push(resolveUrl(locText, opts.baseUrl));
+    const loc = resolveUrl(locText, opts.baseUrl);
+    if (seen.has(loc)) continue;
+    seen.add(loc);
+    childSitemaps.push(loc);
   }
 
   return { kind: 'sitemap-index', items: [], childSitemaps, meta: { title: null } };

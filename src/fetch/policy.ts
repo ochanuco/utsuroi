@@ -97,6 +97,11 @@ export function planAttempts(
   }
 
   const maxAttempts = opts?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 0) {
+    throw new FetcherPolicyInvalidError([
+      `maxAttempts must be a finite non-negative integer, got: ${maxAttempts}`,
+    ]);
+  }
   return policy.orderList.slice(0, maxAttempts);
 }
 

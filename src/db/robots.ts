@@ -75,16 +75,15 @@ export async function upsertRobotsPolicy(
     )
     .run();
 
-  return {
-    id,
-    siteId: input.siteId,
-    canonicalOrigin: input.canonicalOrigin,
-    mode: input.mode,
-    reason: input.reason ?? null,
-    updatedBy: input.updatedBy ?? null,
-    createdAt,
-    updatedAt: now,
-  };
+  // upsert 後に再取得して永続化済みの行を返す (INSERT/UPDATE いずれの経路でも
+  // DB の実データと戻り値を一致させるため。以前は競合(UPDATE)時にも id/createdAt を
+  // 生成前の値のまま返しており、実際に保存された値と食い違うバグがあった)。
+  const persisted = await db
+    .prepare(`SELECT * FROM robots_policies WHERE site_id = ? AND canonical_origin = ?`)
+    .bind(input.siteId, input.canonicalOrigin)
+    .first();
+  if (!persisted) throw new Error('upsertRobotsPolicy: row not found after upsert');
+  return mapPolicyRow(persisted);
 }
 
 export async function getRobotsPolicy(

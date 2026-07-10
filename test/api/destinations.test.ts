@@ -33,6 +33,34 @@ describe('POST/GET /api/destinations (webhook masking)', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects a webhook_url blocked by the SSRF policy (400)', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request(
+      '/api/destinations',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ name: uniqueName('SSRF'), webhook_url: 'http://127.0.0.1/webhook' }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects destination creation with 503 when WEBHOOK_ENC_KEY is not configured (no plaintext fallback)', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request(
+      '/api/destinations',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ name: uniqueName('No Key'), webhook_url: 'https://discord.com/api/webhooks/1/nokey' }),
+      },
+      testEnv({ WEBHOOK_ENC_KEY: undefined })
+    );
+    expect(res.status).toBe(503);
+  });
+
   it('lists destinations with masked URLs', async () => {
     const { app } = buildTestApp();
     await app.request(

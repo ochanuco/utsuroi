@@ -19,8 +19,8 @@ const changeKindSchema = z.enum(['new', 'updated', 'removed']);
 
 const createSubscriptionSchema = z.object({
   destination_id: z.string().min(1),
-  site_id: z.string().nullable().optional(),
-  monitor_id: z.string().nullable().optional(),
+  site_id: z.string().min(1).nullable().optional(),
+  monitor_id: z.string().min(1).nullable().optional(),
   tag: z.string().nullable().optional(),
   kind: changeKindSchema.nullable().optional(),
   kinds: z.array(changeKindSchema).optional(),

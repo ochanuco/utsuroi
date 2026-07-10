@@ -101,7 +101,9 @@ export async function listChangesByMonitor(
   pagination?: { limit: number; offset: number }
 ): Promise<ChangeRow[]> {
   const limitClause = pagination ? ` LIMIT ? OFFSET ?` : '';
-  const stmt = db.prepare(`SELECT * FROM changes WHERE monitor_id = ? ORDER BY detected_at DESC${limitClause}`);
+  const stmt = db.prepare(
+    `SELECT * FROM changes WHERE monitor_id = ? ORDER BY detected_at DESC, id DESC${limitClause}`
+  );
   const bound = pagination ? stmt.bind(monitorId, pagination.limit, pagination.offset) : stmt.bind(monitorId);
   const { results } = await bound.all();
   return results.map(mapRow);

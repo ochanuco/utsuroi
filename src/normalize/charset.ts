@@ -50,10 +50,14 @@ function detectBom(raw: Uint8Array): { encoding: string; length: number } | null
   return null;
 }
 
-const META_CHARSET_RE = /<meta[^>]+charset\s*=\s*["']?([a-zA-Z0-9_-]+)/i;
+// (?<![\w-]) の negative lookbehind は、属性名の直前が英数字/アンダースコア/ハイフンでは
+// ないこと (= 属性名の先頭であること) を要求する。これが無いと `data-charset="x"` の
+// ような複合属性名の一部 (`charset`) を誤って属性名そのものとしてマッチしてしまう
+// (`\b` だけでは `-` と英字の間にも語境界が成立してしまうため防げない)。
+const META_CHARSET_RE = /<meta[^>]+(?<![\w-])charset\s*=\s*["']?([a-zA-Z0-9_-]+)/i;
 const META_TAG_RE = /<meta\b[^>]*>/gi;
-const HTTP_EQUIV_ATTR_RE = /http-equiv\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i;
-const CONTENT_ATTR_RE = /\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i;
+const HTTP_EQUIV_ATTR_RE = /(?<![\w-])http-equiv\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i;
+const CONTENT_ATTR_RE = /(?<![\w-])content\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i;
 const CONTENT_CHARSET_RE = /charset\s*=\s*([a-zA-Z0-9_-]+)/i;
 const XML_DECL_RE = /<\?xml[^>]+encoding\s*=\s*["']([a-zA-Z0-9_-]+)["']/i;
 

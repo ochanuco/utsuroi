@@ -71,6 +71,9 @@ export function classifyIPv4(bytes: [number, number, number, number]): IpCheckRe
   if (a === 172 && b >= 16 && b <= 31) return { blocked: true, reason: 'private' };
   if (a === 192 && b === 168) return { blocked: true, reason: 'private' };
   if (a === 100 && b >= 64 && b <= 127) return { blocked: true, reason: 'cgn' };
+  // 224.0.0.0/4 (multicast) + 240.0.0.0/4 (reserved) もカバーする。255.255.255.255
+  // (limited broadcast) は 240/4 に含まれるため個別分岐は不要。
+  if (a >= 224) return { blocked: true, reason: 'invalid' };
   return { blocked: false, reason: null };
 }
 

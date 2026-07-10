@@ -84,6 +84,17 @@ describe('checkUrlForSsrf', () => {
       expect(checkUrlForSsrf('http://100.128.0.0/').allowed).toBe(true);
     });
 
+    it('rejects multicast (224.0.0.0/4) and reserved (240.0.0.0/4) addresses, including the limited broadcast address', () => {
+      expect(checkUrlForSsrf('http://224.0.0.1/').allowed).toBe(false);
+      expect(checkUrlForSsrf('http://239.255.255.255/').allowed).toBe(false);
+      expect(checkUrlForSsrf('http://240.0.0.1/').allowed).toBe(false);
+      expect(checkUrlForSsrf('http://255.255.255.255/').allowed).toBe(false);
+    });
+
+    it('allows just outside the multicast/reserved range', () => {
+      expect(checkUrlForSsrf('http://223.255.255.255/').allowed).toBe(true);
+    });
+
     it('rejects obfuscated decimal (single-integer) loopback addresses', () => {
       // 2130706433 === 127.0.0.1
       const r = checkUrlForSsrf('http://2130706433/');

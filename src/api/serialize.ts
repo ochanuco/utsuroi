@@ -15,6 +15,7 @@ import type {
   SubscriptionRow,
 } from '../db';
 import type { AuditEventRow } from '../db';
+import { extractMaskedWebhookUrl, isEncryptedWebhookUrl } from '../db';
 import type { FetcherPolicy } from '../shared/contracts';
 import { maskWebhookUrl } from './mask';
 
@@ -118,10 +119,16 @@ export function serializeChange(row: ChangeRow) {
 }
 
 export function serializeDestination(row: DestinationRow) {
+  // row.webhookUrl は暗号化保存フォーマット (`enc:v1:...`, src/db/webhookCrypto.ts) が前提。
+  // マスク文字列は暗号化時にその中へ埋め込み済みのため、表示のためだけに鍵で復号する必要はない。
+  // 万一 (テストフィクスチャ等で) 平文が渡ってきた場合は従来通りその場でマスクする。
+  const webhookUrlMasked = isEncryptedWebhookUrl(row.webhookUrl)
+    ? extractMaskedWebhookUrl(row.webhookUrl)
+    : maskWebhookUrl(row.webhookUrl);
   return {
     id: row.id,
     name: row.name,
-    webhook_url_masked: maskWebhookUrl(row.webhookUrl),
+    webhook_url_masked: webhookUrlMasked,
     enabled: row.enabled,
     created_at: row.createdAt,
     updated_at: row.updatedAt,

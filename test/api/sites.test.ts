@@ -60,6 +60,25 @@ describe('POST/GET /api/sites', () => {
     expect(body.total).toBeGreaterThanOrEqual(3);
   });
 
+  it('rejects more than one canonical_origins entry instead of silently discarding the rest (400)', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request(
+      '/api/sites',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          name: uniqueName('Multi Origin Site'),
+          canonical_origins: ['https://a.example.com', 'https://b.example.com'],
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json() as any;
+    expect(body.error.code).toBe('multiple_canonical_origins_unsupported');
+  });
+
   it('rejects a non-JSON body', async () => {
     const { app } = buildTestApp();
     const res = await app.request(

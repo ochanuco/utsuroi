@@ -74,10 +74,6 @@ export const BLOCK_TAGS: readonly string[] = [
   'ul',
 ];
 
-/** includeSelectors マーキング用の内部センチネル (最終出力には残らない) */
-export const INCLUDE_START_MARKER = '<!--utsuroi:include-start-->';
-export const INCLUDE_END_MARKER = '<!--utsuroi:include-end-->';
-
 /**
  * extractedText 抽出時、ブロック境界を示すために使う内部センチネル文字。
  * Unicode 私用領域 (Private Use Area) の1文字を使い、通常のHTML本文テキストとは

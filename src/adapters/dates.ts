@@ -73,7 +73,13 @@ export function normalizeRfc822Date(raw: string): string | null {
       const zm = parseInt(zoneStr.slice(3, 5), 10);
       offsetMinutes = sign * (zh * 60 + zm);
     } else {
-      offsetMinutes = RFC822_ZONES[zoneStr.toLowerCase()] ?? 0;
+      const zone = RFC822_ZONES[zoneStr.toLowerCase()];
+      // 未知の名前付きタイムゾーンを UTC (offset 0) 扱いで黙って進めると誤った時刻を
+      // 生成しうるため、既知のゾーン名でなければ Date の一般パースへフォールバックする。
+      if (zone === undefined) {
+        return fallbackParse(s);
+      }
+      offsetMinutes = zone;
     }
   }
 

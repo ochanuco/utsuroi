@@ -39,4 +39,30 @@ describe('decodeHtmlBestEffort / meta http-equiv charset sniffing', () => {
     expect(decoded).toContain('あ');
     expect(decoded).not.toContain('�');
   });
+
+  it('does not mistake a data-charset custom attribute name for a real charset= declaration', () => {
+    // A `data-charset` custom attribute should not be sniffed as a real charset
+    // declaration -- only a standalone `charset=` attribute name counts. Since there's no
+    // genuine charset declaration here, decoding must fall back to UTF-8 and therefore fail
+    // to decode the embedded Shift_JIS bytes correctly (producing the replacement
+    // character), proving the bogus attribute name was correctly ignored.
+    const bytes = buildHtmlBytes('<meta data-charset="shift_jis">');
+    const decoded = decodeHtmlBestEffort(bytes);
+    expect(decoded).not.toContain('あ');
+    expect(decoded).toContain('�');
+  });
+
+  it('does not mistake data-http-equiv/data-content attribute names for the real http-equiv/content attributes', () => {
+    // Both attribute *names* here are custom (`data-http-equiv`, `data-content`), and their
+    // values do not happen to contain the literal substring "charset=" either, so this
+    // isolates the attribute-name boundary fix from the (separate, expected) limitation
+    // that the regex-based sniffer cannot distinguish an attribute value from surrounding
+    // structure once "charset=" literally appears as text.
+    const bytes = buildHtmlBytes(
+      '<meta data-http-equiv="Content-Type" data-content="text/html; encoding=shift_jis">',
+    );
+    const decoded = decodeHtmlBestEffort(bytes);
+    expect(decoded).not.toContain('あ');
+    expect(decoded).toContain('�');
+  });
 });

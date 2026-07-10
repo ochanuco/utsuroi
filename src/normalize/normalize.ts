@@ -4,15 +4,13 @@ import {
   BLOCK_BREAK_SENTINEL,
   BLOCK_TAGS,
   DEFAULT_STRIP_QUERY_PARAMS,
-  INCLUDE_END_MARKER,
-  INCLUDE_START_MARKER,
   NORMALIZATION_VERSION,
   URL_ATTRIBUTE_NAMES,
 } from './constants';
 import { decodeHtmlBestEffort } from './charset';
 import { isDynamicAttribute, sortAttributeNames } from './attributes';
 import { normalizeUrlAttribute } from './url';
-import { extractIncludedRegions } from './include';
+import { buildIncludeMarkers, extractIncludedRegions } from './include';
 import { collapseHtmlWhitespace, normalizeExtractedText } from './text';
 
 /**
@@ -47,12 +45,14 @@ export async function normalizeHtml(
   const rawHash = await sha256Hex(raw);
 
   const decoded = decodeHtmlBestEffort(raw);
-  const stage1Html = await runCleanPass(decoded, opts);
+  const hasIncludeSelectors = !!(opts.includeSelectors && opts.includeSelectors.length > 0);
+  // includeSelectors マーキング用のセンチネルは、正規化1回ごとに生成する実行時一意
+  // トークンを埋め込んだコメントを使う (入力HTML自身に同じ固定コメントが含まれる
+  // ケースとの衝突を避けるため。src/normalize/include.ts 参照)。
+  const includeToken = hasIncludeSelectors ? crypto.randomUUID() : null;
+  const stage1Html = await runCleanPass(decoded, opts, includeToken);
 
-  const includedHtml =
-    opts.includeSelectors && opts.includeSelectors.length > 0
-      ? extractIncludedRegions(stage1Html)
-      : stage1Html;
+  const includedHtml = includeToken ? extractIncludedRegions(stage1Html, includeToken) : stage1Html;
 
   const normalizedHtml = collapseHtmlWhitespace(includedHtml);
   const extractedText = await extractText(includedHtml);
@@ -77,7 +77,11 @@ export async function normalizeHtml(
  * href/src 絶対URL化+tracking除去、動的属性除外、属性順序正規化を単一の
  * HTMLRewriter パスで実行する。
  */
-async function runCleanPass(html: string, opts: NormalizeOptions): Promise<string> {
+async function runCleanPass(
+  html: string,
+  opts: NormalizeOptions,
+  includeToken: string | null,
+): Promise<string> {
   const stripScripts = opts.stripScripts ?? true;
   const stripStyles = opts.stripStyles ?? true;
   const stripComments = opts.stripComments ?? true;
@@ -123,13 +127,16 @@ async function runCleanPass(html: string, opts: NormalizeOptions): Promise<strin
     });
   }
 
-  for (const selector of opts.includeSelectors ?? []) {
-    rewriter.on(selector, {
-      element: (e) => {
-        e.before(INCLUDE_START_MARKER, { html: true });
-        e.after(INCLUDE_END_MARKER, { html: true });
-      },
-    });
+  if (includeToken) {
+    const markers = buildIncludeMarkers(includeToken);
+    for (const selector of opts.includeSelectors ?? []) {
+      rewriter.on(selector, {
+        element: (e) => {
+          e.before(markers.start, { html: true });
+          e.after(markers.end, { html: true });
+        },
+      });
+    }
   }
 
   // 全要素対象: href/src の絶対URL化+tracking除去、動的属性除外、属性順序正規化。

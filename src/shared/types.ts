@@ -63,6 +63,11 @@ export type DiffLevel =
 
 export type CheckJobStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'policy_stopped';
 
-export type DeliveryStatus = 'pending' | 'delivered' | 'failed' | 'dead';
+/**
+ * 'sending' は getPendingDelivery の原子的クレーム (src/db/notifyStore.ts) が使う
+ * 一時状態。claimed_at から一定時間 (CLAIM_STALE_MS) 経っても 'sending' のまま
+ * markDelivered/markFailed へ進まなかった行は、再度 claim 可能な stale とみなす。
+ */
+export type DeliveryStatus = 'pending' | 'sending' | 'delivered' | 'failed' | 'dead';
 
 export type RobotsMode = 'enforce' | 'ignore';

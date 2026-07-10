@@ -27,7 +27,12 @@ export function parseJson<T>(value: string | null | undefined, fallback: T): T {
 
 export function toJson(value: unknown): string | null {
   if (value === null || value === undefined) return null;
-  return JSON.stringify(value);
+  // JSON.stringify can return `undefined` (not a string) for values it cannot represent
+  // (function, symbol, or an object whose toJSON()/every own property serializes to
+  // undefined). D1 bind() expects string | null, so normalize that case to null rather
+  // than passing `undefined` through (which TypeScript's lib.d.ts signature hides).
+  const result: string | undefined = JSON.stringify(value);
+  return typeof result === 'string' ? result : null;
 }
 
 /** D1 の `run()` 結果から実際に書き込まれた行数があるかを判定する (INSERT OR IGNORE の冪等判定用) */

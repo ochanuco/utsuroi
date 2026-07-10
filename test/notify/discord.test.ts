@@ -64,6 +64,15 @@ describe('buildDiscordPayload', () => {
     };
     expect(payload.embeds[0]!.description).not.toContain('```');
   });
+
+  it('truncates an embed title longer than 256 chars (Discord API limit)', () => {
+    const longTitle = 'x'.repeat(300);
+    const payload = buildDiscordPayload(makeChange({ title: longTitle })) as {
+      embeds: Array<{ title: string }>;
+    };
+    expect(payload.embeds[0]!.title.length).toBeLessThanOrEqual(256);
+    expect(payload.embeds[0]!.title).not.toBe(longTitle);
+  });
 });
 
 describe('maskWebhookUrl', () => {
@@ -146,6 +155,41 @@ describe('sendToDiscord', () => {
     if (!result.ok) {
       expect(result.status).toBeNull();
       expect(result.message).not.toContain(WEBHOOK_URL);
+    }
+  });
+
+  it('does not leak exception details or response body fragments in the persisted message', async () => {
+    const fetchStub = async () => {
+      throw new Error('DNS lookup failed for internal-host.local: super secret detail');
+    };
+    const networkErrorResult = await sendToDiscord(WEBHOOK_URL, {}, { fetch: fetchStub });
+    expect(networkErrorResult.ok).toBe(false);
+    if (!networkErrorResult.ok) {
+      expect(networkErrorResult.message).not.toContain('super secret detail');
+    }
+
+    const bodyLeakStub = async () => new Response('super secret response body detail', { status: 500 });
+    const serverErrorResult = await sendToDiscord(WEBHOOK_URL, {}, { fetch: bodyLeakStub });
+    expect(serverErrorResult.ok).toBe(false);
+    if (!serverErrorResult.ok) {
+      expect(serverErrorResult.message).not.toContain('super secret response body detail');
+    }
+  });
+
+  it('revalidates the webhook URL against the SSRF policy immediately before sending', async () => {
+    let fetchCalled = false;
+    const fetchStub = async () => {
+      fetchCalled = true;
+      return new Response(null, { status: 204 });
+    };
+
+    const result = await sendToDiscord('http://127.0.0.1/webhook', {}, { fetch: fetchStub });
+
+    expect(fetchCalled).toBe(false);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.status).not.toBeNull();
+      expect(result.message).not.toContain('127.0.0.1');
     }
   });
 });

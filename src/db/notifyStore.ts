@@ -5,6 +5,11 @@
 import type { ChangeKind, SourceType } from '../shared/types';
 import type { ChangeSummary, NotifyStore, PendingDelivery } from '../shared/contracts';
 import { markDeliveryDelivered, markDeliveryFailed } from './deliveries';
+import { decryptWebhookUrl } from './webhookCrypto';
+import { nowIso, wasWritten } from './util';
+
+/** claimed_at から this 経過していれば 'sending' のまま止まった claim を stale とみなし再取得可とする */
+const CLAIM_STALE_MS = 5 * 60 * 1000;
 
 interface PendingDeliveryQueryRow {
   delivery_id: string;
@@ -25,15 +30,37 @@ interface PendingDeliveryQueryRow {
 /**
  * Discord Webhook配送状態ストア。
  *
- * getPendingDelivery は以下の場合に null を返す (冪等性の要, ADR-0007):
+ * getPendingDelivery は「配送権利の原子的な claim」でもある: 呼び出しごとに
+ * `status IN ('pending','failed')` (または claimed_at が stale な 'sending') の行だけを
+ * 条件付き UPDATE で 'sending' へ遷移させ、実際に自分が遷移させられた場合のみ配送対象
+ * として返す。これにより、同一 delivery を指す NOTIFY_QUEUE メッセージが重複配送
+ * (Cloudflare Queues の at-least-once 配送、リトライ、同時実行等) されても、実際に
+ * Discord へ POST するのは claim に成功した1呼び出しだけになる。
+ *
+ * null を返すのは以下の場合 (冪等性の要, ADR-0007):
  * - delivery_id が存在しない
  * - 既に 'delivered' 済み
  * - 'dead' (再試行を諦めた) 状態
- * 'pending' および 'failed' (再試行対象) は配送対象として返す。
+ * - 他の呼び出しが既に claim 済み (status='sending' かつ claimed_at が stale でない)
  */
-export function createD1NotifyStore(db: D1Database): NotifyStore {
+export function createD1NotifyStore(db: D1Database, webhookEncKey: string | undefined): NotifyStore {
   return {
     async getPendingDelivery(deliveryId: string): Promise<PendingDelivery | null> {
+      const now = nowIso();
+      const staleBefore = new Date(Date.now() - CLAIM_STALE_MS).toISOString();
+
+      const claim = await db
+        .prepare(
+          `UPDATE deliveries
+             SET status = 'sending', claimed_at = ?, updated_at = ?
+           WHERE id = ?
+             AND (status IN ('pending', 'failed') OR (status = 'sending' AND claimed_at < ?))`
+        )
+        .bind(now, now, deliveryId, staleBefore)
+        .run();
+
+      if (!wasWritten(claim)) return null;
+
       const row = await db
         .prepare(
           `SELECT
@@ -61,8 +88,13 @@ export function createD1NotifyStore(db: D1Database): NotifyStore {
         .bind(deliveryId)
         .first<PendingDeliveryQueryRow>();
 
+      // claim (UPDATE) が成功した直後なので理論上 null にはならないが、防御的に扱う。
       if (!row) return null;
-      if (row.delivery_status === 'delivered' || row.delivery_status === 'dead') return null;
+
+      if (!webhookEncKey) {
+        throw new Error('WEBHOOK_ENC_KEY is not configured; cannot decrypt webhook_url for delivery');
+      }
+      const webhookUrl = await decryptWebhookUrl(row.webhook_url, webhookEncKey);
 
       const change: ChangeSummary = {
         changeId: row.change_id,
@@ -79,7 +111,7 @@ export function createD1NotifyStore(db: D1Database): NotifyStore {
       return {
         deliveryId: row.delivery_id,
         change,
-        webhookUrl: row.webhook_url,
+        webhookUrl,
         attemptCount: row.attempt_count,
       };
     },

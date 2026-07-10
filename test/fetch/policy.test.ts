@@ -150,6 +150,17 @@ describe('planAttempts', () => {
     expect(plan.map((e) => e.fetcherId)).toEqual(['a', 'b']);
   });
 
+  it('rejects a non-integer, negative, NaN, or Infinity maxAttempts instead of silently misbehaving', () => {
+    for (const bad of [-1, 1.5, NaN, Infinity, -Infinity]) {
+      expect(() => planAttempts(policy, { maxAttempts: bad })).toThrow(FetcherPolicyInvalidError);
+    }
+  });
+
+  it('allows maxAttempts: 0 (yields an empty plan, handled by runFetchSequence)', () => {
+    const plan = planAttempts(policy, { maxAttempts: 0 });
+    expect(plan).toEqual([]);
+  });
+
   it('re-validates immediately before execution and throws a dedicated error on invalid policy', () => {
     const invalid: FetcherPolicy = {
       allowList: ['a'],

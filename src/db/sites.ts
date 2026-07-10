@@ -28,7 +28,19 @@ export async function getSite(db: D1Database, id: string): Promise<SiteRow | nul
   return row ? mapRow(row) : null;
 }
 
-export async function listSites(db: D1Database): Promise<SiteRow[]> {
-  const { results } = await db.prepare(`SELECT * FROM sites ORDER BY created_at ASC`).all();
+export async function listSites(
+  db: D1Database,
+  pagination?: { limit: number; offset: number }
+): Promise<SiteRow[]> {
+  const limitClause = pagination ? ` LIMIT ? OFFSET ?` : '';
+  const stmt = db.prepare(`SELECT * FROM sites ORDER BY created_at ASC, id ASC${limitClause}`);
+  const bound = pagination ? stmt.bind(pagination.limit, pagination.offset) : stmt.bind();
+  const { results } = await bound.all();
   return results.map(mapRow);
+}
+
+/** sites の総数 (ページング用)。listSites と対で使う。 */
+export async function countSites(db: D1Database): Promise<number> {
+  const row = await db.prepare(`SELECT COUNT(*) as count FROM sites`).first<{ count: number }>();
+  return row?.count ?? 0;
 }

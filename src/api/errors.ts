@@ -1,7 +1,7 @@
 /**
  * 管理API共通のエラー型。{ error: { code, message } } 形式で応答する。
  */
-export type ApiErrorStatus = 400 | 401 | 404 | 405 | 409;
+export type ApiErrorStatus = 400 | 401 | 404 | 405 | 409 | 503;
 
 export class ApiError extends Error {
   readonly status: ApiErrorStatus;
@@ -25,4 +25,8 @@ export function notFound(code: string, message: string): ApiError {
 
 export function conflict(code: string, message: string): ApiError {
   return new ApiError(409, code, message);
+}
+
+export function serviceUnavailable(code: string, message: string): ApiError {
+  return new ApiError(503, code, message);
 }

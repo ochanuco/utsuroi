@@ -28,13 +28,19 @@ describe('detectFeedType', () => {
 
 describe('parseSource unsupported sourceType', () => {
   it('throws AdapterParseError(unsupported_source_type) for sourceType=page', () => {
+    // Use toThrow() to assert the call actually throws (rather than a try/catch where a
+    // failed expect.unreachable() would itself be swallowed by the same catch block,
+    // masking a bug where parseSource silently didn't throw).
+    expect(() => parseSource('page', enc('<html></html>'), BASE)).toThrow(AdapterParseError);
+
+    let caught: unknown;
     try {
       parseSource('page', enc('<html></html>'), BASE);
-      expect.unreachable();
     } catch (err) {
-      expect(err).toBeInstanceOf(AdapterParseError);
-      expect((err as AdapterParseError).code).toBe('unsupported_source_type');
-      expect((err as AdapterParseError).failureClass).toBe('parse_error');
+      caught = err;
     }
+    expect(caught).toBeInstanceOf(AdapterParseError);
+    expect((caught as AdapterParseError).code).toBe('unsupported_source_type');
+    expect((caught as AdapterParseError).failureClass).toBe('parse_error');
   });
 });

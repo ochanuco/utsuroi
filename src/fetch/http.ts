@@ -243,9 +243,21 @@ async function handleTerminalResponse(
   return failure('network_error', status, `unexpected status ${status}`, null);
 }
 
+export interface HttpFetchOptions {
+  /** テスト用の fetch 差し替え。省略時はグローバル fetch */
+  fetch?: typeof fetch;
+  /**
+   * 取得する URL (最初のリクエスト・各リダイレクトホップの両方) を検査するガード。
+   * 登録/実行直前の SSRF 検査を通過した URL でも、リダイレクト先が private/metadata
+   * 等へ誘導する可能性があるため、各ホップで再検証する (SPEC §15)。
+   * 拒否時は ssrf_blocked の FetchFailure を返す。
+   */
+  urlGuard?: (url: string) => { allowed: boolean; reason: string | null };
+}
+
 export async function httpFetch(
   req: FetchRequest,
-  opts?: { fetch?: typeof fetch }
+  opts?: HttpFetchOptions
 ): Promise<FetchOutcome> {
   const fetchImpl = opts?.fetch ?? fetch;
   const limits: FetchLimits = { ...DEFAULT_FETCH_LIMITS, ...req.limits };
@@ -257,6 +269,13 @@ export async function httpFetch(
   let redirectsFollowed = 0;
 
   for (;;) {
+    if (opts?.urlGuard) {
+      const guard = opts.urlGuard(currentUrl);
+      if (!guard.allowed) {
+        return failure('ssrf_blocked', null, `url blocked by ssrf policy: ${guard.reason ?? 'unknown'}`, null);
+      }
+    }
+
     let response: Response;
     try {
       response = await fetchImpl(currentUrl, {
@@ -289,7 +308,11 @@ export async function httpFetch(
         );
       }
       redirectsFollowed += 1;
-      currentUrl = new URL(location, currentUrl).toString();
+      try {
+        currentUrl = new URL(location, currentUrl).toString();
+      } catch {
+        return failure('network_error', response.status, 'invalid redirect Location header', null);
+      }
       continue;
     }
 

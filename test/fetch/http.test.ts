@@ -117,6 +117,59 @@ describe('httpFetch: redirects', () => {
       expect(outcome.message).toContain('too_many_redirects');
     }
   });
+
+  it('fails with network_error (not an uncaught throw) when a redirect Location is unparsable', async () => {
+    const stub: FetchStub = async () =>
+      new Response(null, { status: 302, headers: { location: 'http://[not-a-valid-host' } });
+
+    const outcome = await httpFetch(baseRequest({ url: 'https://example.com/start' }), { fetch: stub });
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.failureClass).toBe('network_error');
+      expect(outcome.message).toContain('redirect Location');
+    }
+  });
+
+  it('re-validates each redirect hop against urlGuard and blocks a hop that resolves to a disallowed URL', async () => {
+    const calls: string[] = [];
+    const stub: FetchStub = async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url === 'https://example.com/start') {
+        return new Response(null, { status: 302, headers: { location: 'http://169.254.169.254/latest/meta-data' } });
+      }
+      throw new Error(`unexpected url: ${url}`);
+    };
+
+    const outcome = await httpFetch(baseRequest({ url: 'https://example.com/start' }), {
+      fetch: stub,
+      urlGuard: (url) => (url.includes('169.254.169.254') ? { allowed: false, reason: 'metadata' } : { allowed: true, reason: null }),
+    });
+
+    expect(calls).toEqual(['https://example.com/start']);
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.failureClass).toBe('ssrf_blocked');
+    }
+  });
+
+  it('applies urlGuard to the initial URL as well', async () => {
+    let fetchCalled = false;
+    const stub: FetchStub = async () => {
+      fetchCalled = true;
+      return new Response('hello', { status: 200 });
+    };
+
+    const outcome = await httpFetch(baseRequest({ url: 'http://127.0.0.1/' }), {
+      fetch: stub,
+      urlGuard: () => ({ allowed: false, reason: 'loopback' }),
+    });
+
+    expect(fetchCalled).toBe(false);
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.failureClass).toBe('ssrf_blocked');
+  });
 });
 
 describe('httpFetch: size limits', () => {

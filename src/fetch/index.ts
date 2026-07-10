@@ -13,3 +13,4 @@ export type {
 } from './policy';
 
 export { httpFetch } from './http';
+export type { HttpFetchOptions } from './http';

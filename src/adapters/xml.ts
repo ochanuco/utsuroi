@@ -10,10 +10,34 @@ import { AdapterParseError } from './errors';
 const ARRAY_TAGS = new Set(['item', 'entry', 'url', 'sitemap', 'link']);
 
 /**
+ * バイト列先頭の BOM から UTF-16 LE/BE を検出する。BOM が無ければ null (UTF-8/ASCII系とみなす)。
+ * UTF-16 は XML宣言の encoding= をUTF-8前提でスニッフすると文字化けし誤判定するため、
+ * BOM 検出を encoding宣言スニッフより先に行う必要がある。
+ */
+function detectUtf16Bom(body: Uint8Array): 'utf-16le' | 'utf-16be' | null {
+  if (body.length >= 2 && body[0] === 0xff && body[1] === 0xfe) return 'utf-16le';
+  if (body.length >= 2 && body[0] === 0xfe && body[1] === 0xff) return 'utf-16be';
+  return null;
+}
+
+/**
  * XML宣言の encoding を best-effort で読み取り、TextDecoder でデコードする。
  * 宣言が無い/デコーダが対応しない場合は UTF-8 にフォールバックする。
+ *
+ * UTF-16 LE/BE の BOM がある場合は、encoding宣言スニッフ (UTF-8前提でバイト列を読む) より
+ * 先にそれを検出し、対応する TextDecoder で直接デコードする (BOM 無しの場合のみ、従来通り
+ * UTF-8 でスニッフしてから宣言された encoding でデコードする)。
  */
 function decodeBody(body: Uint8Array): string {
+  const utf16Bom = detectUtf16Bom(body);
+  if (utf16Bom) {
+    try {
+      return new TextDecoder(utf16Bom, { fatal: false, ignoreBOM: false }).decode(body);
+    } catch {
+      // デコーダが対応しない環境では UTF-8 フォールバックへ (通常ここには来ない想定)。
+    }
+  }
+
   let encoding = 'utf-8';
   try {
     const sniffLen = Math.min(200, body.length);

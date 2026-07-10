@@ -57,7 +57,8 @@ function decodeCommonHtmlEntities(value: string): string {
     if (ref[0] === '#') {
       const isHex = ref[1] === 'x' || ref[1] === 'X';
       const codePoint = Number.parseInt(isHex ? ref.slice(2) : ref.slice(1), isHex ? 16 : 10);
-      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : match;
+      const isValidCodePoint = Number.isFinite(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff;
+      return isValidCodePoint ? String.fromCodePoint(codePoint) : match;
     }
     switch (ref.toLowerCase()) {
       case 'amp':

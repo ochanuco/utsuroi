@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseRobotsTxt } from '../../src/robots/parser';
+import { normalizePercentEncoding, parseRobotsTxt } from '../../src/robots/parser';
 
 describe('parseRobotsTxt', () => {
   it('groups consecutive user-agent lines into a single group', () => {
@@ -87,5 +87,26 @@ describe('parseRobotsTxt', () => {
     expect(rules.groups).toHaveLength(1);
     expect(rules.groups[0]?.userAgents).toEqual(['a', 'b']);
     expect(rules.groups[0]?.rules).toEqual([{ directive: 'disallow', pattern: '/' }]);
+  });
+});
+
+describe('normalizePercentEncoding: non-BMP (astral) characters', () => {
+  it('percent-encodes a full astral code point as one 4-byte UTF-8 sequence, not split surrogate halves', () => {
+    // U+1F600 (grinning face emoji) is a surrogate pair in UTF-16. Iterating by UTF-16
+    // code unit (instead of by code point) would encode each lone surrogate separately,
+    // producing two U+FFFD replacement characters instead of the correct 4-byte sequence.
+    const astral = '\u{1F600}';
+    const expectedBytes = Array.from(new TextEncoder().encode(astral))
+      .map((b) => `%${b.toString(16).toUpperCase().padStart(2, '0')}`)
+      .join('');
+    expect(normalizePercentEncoding(astral)).toBe(expectedBytes);
+    // Sanity: a lone surrogate encodes to the UTF-8 replacement character (0xEF 0xBF 0xBD),
+    // which is NOT what we expect here -- this pins down that the fix actually matters.
+    expect(normalizePercentEncoding(astral)).not.toBe('%EF%BF%BD%EF%BF%BD');
+  });
+
+  it('still percent-encodes ordinary BMP non-ASCII characters correctly', () => {
+    const result = normalizePercentEncoding('café');
+    expect(result).toBe('caf%C3%A9');
   });
 });

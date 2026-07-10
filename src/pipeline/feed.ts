@@ -8,6 +8,7 @@
  * RSS は仕様上 updatedAt を持たないため (src/adapters/rss.ts)、既存 entry の再取得では 'updated' を作らない。
  */
 import { parseSource } from '../adapters';
+import { AdapterParseError } from '../adapters/errors';
 import type { FeedItem } from '../shared/contracts';
 import type { FetchSuccess } from '../shared/contracts';
 import { sha256Hex } from '../shared/hash';
@@ -71,6 +72,13 @@ export async function processFeedItems(ctx: CheckContext, items: FeedItem[]): Pr
     // FeedItem.url が無い entry は Target (UNIQUE(monitor_id, url)) を作れないためスキップする。
     if (!item.url) continue;
 
+    // item URL にも sitemap-index の子 sitemap と同じ URL ポリシー検査 (SSRF) を適用する。
+    // item URL 自体をこのパイプラインが取得 (fetch) することは無い (メタデータとして
+    // 保存するのみ) ため、resolveAndCheck (DNS解決を伴う動的検査) や robots 評価は行わず
+    // 静的検査のみで十分と判断する。拒否された URL は target/change を作らずスキップする。
+    const itemSsrf = checkUrlForSsrf(item.url);
+    if (!itemSsrf.allowed) continue;
+
     const isNew = !(await targetExists(ctx.db, ctx.monitor.id, item.url));
     const target = await upsertTarget(ctx.db, {
       monitorId: ctx.monitor.id,
@@ -127,6 +135,19 @@ export async function processFeedContent(
   const rawHash = await sha256Hex(body);
   await putIfAbsent(ctx.env.BODIES, bodyKey(rawHash), body);
 
+  // createSnapshot / 成功確定は parseSource が成功した後にのみ行う。パース不能な本文を
+  // 「正常に取り込めた Snapshot」として記録してしまうと、以降の diff/変更検知の前提が
+  // 崩れるため。AdapterParseError (parse_error) はフェッチ自体は成功として扱いつつ
+  // (attempt は既に success で記録済み) Snapshot を作らず items 処理もスキップする。
+  // それ以外の想定外例外は握りつぶさずそのまま再送出する。
+  let parsed;
+  try {
+    parsed = parseSource(ctx.source.type, body, { baseUrl: ctx.source.url });
+  } catch (err) {
+    if (err instanceof AdapterParseError) return;
+    throw err;
+  }
+
   await createSnapshot(ctx.db, {
     monitorId: ctx.monitor.id,
     targetId: target.id,
@@ -139,14 +160,6 @@ export async function processFeedContent(
     bodyHash: rawHash,
     r2Key: bodyKey(rawHash),
   });
-
-  let parsed;
-  try {
-    parsed = parseSource(ctx.source.type, body, { baseUrl: ctx.source.url });
-  } catch {
-    // parse_error: フェッチ自体は成功として扱う (attempt は既に success で記録済み)。items 処理はスキップ。
-    return;
-  }
 
   if (ctx.source.type === 'sitemap-index') {
     await processSitemapIndexChildren(ctx, parsed.childSitemaps);

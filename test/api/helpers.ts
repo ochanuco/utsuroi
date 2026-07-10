@@ -5,13 +5,20 @@ import { createApp, type CreateAppOptions } from '../../src/api';
 
 export const ADMIN_TOKEN = 'test-token';
 
+/**
+ * destinations.webhook_url 暗号化 (src/db/webhookCrypto.ts) 用の固定テストキー。
+ * base64 エンコードされた 32 byte (AES-256-GCM 鍵長)。本番運用では wrangler secret として
+ * 別途設定する想定で、ここではテストの決定性のためだけに固定値を使う。
+ */
+export const TEST_WEBHOOK_ENC_KEY = 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=';
+
 export function db(): D1Database {
   return env.DB;
 }
 
 /** app.request() の第3引数として渡す Env (テスト用トークンを注入) */
 export function testEnv(overrides: Record<string, unknown> = {}) {
-  return { ...env, ADMIN_TOKEN, ...overrides };
+  return { ...env, ADMIN_TOKEN, WEBHOOK_ENC_KEY: TEST_WEBHOOK_ENC_KEY, ...overrides };
 }
 
 export function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
@@ -26,7 +33,10 @@ export function jsonHeaders(extra: Record<string, string> = {}): Record<string, 
 export function stubPublicResolver(): DnsResolver {
   return {
     async resolve(_hostname: string, recordType: 'A' | 'AAAA'): Promise<string[]> {
-      return recordType === 'A' ? ['203.0.113.10'] : [];
+      // 203.0.113.0/24 (TEST-NET-3, RFC 5737) はドキュメント用の予約アドレスであり
+      // 実際にはグローバル到達可能ではないため、正真正銘のグローバル到達可能アドレス
+      // (8.8.8.8) を返す。
+      return recordType === 'A' ? ['8.8.8.8'] : [];
     },
   };
 }

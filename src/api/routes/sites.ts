@@ -8,6 +8,7 @@ import type { FetcherPolicy, FetcherPolicyEntry } from '../../shared/contracts';
 import type { FailureClass } from '../../shared/types';
 import { validateFetcherPolicy } from '../../fetch';
 import {
+  countSites,
   createSite,
   getFetcherPolicy,
   getRobotsPolicy,
@@ -18,7 +19,7 @@ import {
   upsertRobotsPolicy,
 } from '../../db';
 import { badRequest, notFound } from '../errors';
-import { paginate, parsePagination, parseWith, readJsonBody } from '../http';
+import { parsePagination, parseWith, readJsonBody } from '../http';
 import { listRobotsPoliciesBySite } from '../rawQueries';
 import { serializeFetcherPolicy, serializeRobotsPolicy, serializeSite } from '../serialize';
 
@@ -67,6 +68,16 @@ export function sitesRoutes() {
 
   router.post('/', async (c) => {
     const body = parseWith(createSiteSchema, await readJsonBody(c));
+    // SiteRow (DB) は primaryOrigin という単一 origin しか永続化しない (MVP スコープ)。
+    // canonical_origins は primary_origin 未指定時の互換入力として先頭要素のみ採用するが、
+    // 2件以上渡された場合に他の要素を無言で捨てるとデータ消失に気付けないため、
+    // 複数 origin を明示的にサポートしない今は 400 で拒否する (呼び出し側に気付かせる)。
+    if (!body.primary_origin && (body.canonical_origins?.length ?? 0) > 1) {
+      throw badRequest(
+        'multiple_canonical_origins_unsupported',
+        'canonical_origins with more than one entry is not supported yet; pass a single primary_origin instead',
+      );
+    }
     const primaryOrigin = body.primary_origin ?? body.canonical_origins?.[0] ?? null;
     const site = await createSite(c.env.DB, { name: body.name, primaryOrigin });
     return c.json(serializeSite(site), 201);
@@ -74,8 +85,10 @@ export function sitesRoutes() {
 
   router.get('/', async (c) => {
     const pagination = parsePagination(c);
-    const sites = await listSites(c.env.DB);
-    return c.json({ items: paginate(sites, pagination).map(serializeSite), total: sites.length });
+    // D1 側で LIMIT/OFFSET する (全件ロードして in-memory で切り出すと件数に比例して
+    // 遅くなる/メモリを使うため)。total は別途 COUNT(*) で取得する。
+    const [sites, total] = await Promise.all([listSites(c.env.DB, pagination), countSites(c.env.DB)]);
+    return c.json({ items: sites.map(serializeSite), total });
   });
 
   router.get('/:id', async (c) => {

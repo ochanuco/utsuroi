@@ -31,7 +31,7 @@ const handler = {
     await runReconciliation(env);
   },
   async queue(batch: MessageBatch<NotifyQueueMessage>, env: Env): Promise<void> {
-    await processNotifyBatch(toNotifyMessageBatch(batch), createD1NotifyStore(env.DB));
+    await processNotifyBatch(toNotifyMessageBatch(batch), createD1NotifyStore(env.DB, env.WEBHOOK_ENC_KEY));
   },
 } satisfies ExportedHandler<Env, NotifyQueueMessage>;
 

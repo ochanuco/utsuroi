@@ -4,6 +4,7 @@
  */
 import { httpFetch, runFetchSequence } from '../fetch';
 import { createCheckAttempt } from '../db';
+import { checkUrlForSsrf } from '../net';
 import type { FetchOutcome } from '../shared/contracts';
 import type { CheckContext } from './types';
 
@@ -37,7 +38,9 @@ export async function fetchTargetThroughPolicy(
               etag: conditional.etag,
               lastModified: conditional.lastModified,
             },
-            { fetch: ctx.fetchImpl },
+            // リダイレクト各ホップで URL を再検証する (SPEC §15)。初回 URL は呼び出し元で
+            // 既に静的/動的 SSRF 検査済みだが、リダイレクト先までは検査していないため。
+            { fetch: ctx.fetchImpl, urlGuard: checkUrlForSsrf },
           )
         : {
             ok: false,

@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runMonitorCheck } from '../../src/pipeline/runCheck';
 import type { Env } from '../../src/shared/env';
-import { listChangesByMonitor, listDeliveriesByChange, listTargetsByMonitor } from '../../src/db';
+import {
+  listChangesByMonitor,
+  listDeliveriesByChange,
+  listSnapshotsByMonitor,
+  listTargetsByMonitor,
+} from '../../src/db';
 import { buildPipelineFixture, db, fakeEnv, grantingLimiter, routedFetch } from './helpers';
 
 const RSS_BODY = `<?xml version="1.0" encoding="UTF-8"?>
@@ -118,10 +123,12 @@ describe('runMonitorCheck: sitemap-index (SPEC §17.9: detects new URLs under a 
           headers: { 'content-type': 'application/xml', etag: '"child-v1"' },
         }),
     });
+    // 2回の runMonitorCheck 呼び出しが同一ミリ秒内に完了すると lastCheckedAt が偶然
+    // 同値になりテストがフレーキーになりうるため、明示的に異なる時刻を注入して決定的にする。
     await runMonitorCheck(
       fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
       monitor.id,
-      { fetch: fetchStubV1, hostLimiter: grantingLimiter() },
+      { fetch: fetchStubV1, hostLimiter: grantingLimiter(), now: () => new Date('2026-07-10T00:00:00.000Z') },
     );
 
     const targetsAfterFirst = await listTargetsByMonitor(db(), monitor.id);
@@ -142,7 +149,7 @@ describe('runMonitorCheck: sitemap-index (SPEC §17.9: detects new URLs under a 
     await runMonitorCheck(
       fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
       monitor.id,
-      { fetch: fetchStubV2, hostLimiter: grantingLimiter() },
+      { fetch: fetchStubV2, hostLimiter: grantingLimiter(), now: () => new Date('2026-07-10T00:05:00.000Z') },
     );
 
     const targetsAfterSecond = await listTargetsByMonitor(db(), monitor.id);
@@ -160,6 +167,83 @@ const SITEMAP_WITH_LASTMOD_BODY = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://example.com/dup-recovery-page</loc><lastmod>2026-01-01T00:00:00Z</lastmod></url>
 </urlset>`;
+
+describe('processFeedContent: parse failure does not create a Snapshot (CodeRabbit review 2)', () => {
+  it('records the fetch as successful but creates no Snapshot when the feed body is unparsable', async () => {
+    const { monitor } = await buildPipelineFixture({
+      sourceType: 'rss',
+      sourceUrl: 'https://example.com/broken-feed.xml',
+    });
+    const fetchStub = routedFetch({
+      'https://example.com/robots.txt': () => new Response('User-agent: *\nAllow: /', { status: 200 }),
+      'https://example.com/broken-feed.xml': () =>
+        new Response('this is not valid xml <<<', {
+          status: 200,
+          headers: { 'content-type': 'application/rss+xml' },
+        }),
+    });
+
+    const result = await runMonitorCheck(
+      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      monitor.id,
+      { fetch: fetchStub, hostLimiter: grantingLimiter() },
+    );
+
+    // フェッチ自体は成功 (parse_error は attempt レベルでは success 扱い)。
+    expect(result.kind).toBe('completed');
+    expect(result.changeIds).toHaveLength(0);
+
+    // パース不能な本文からは Snapshot を作らない (以前は parseSource 呼び出し前に
+    // createSnapshot していたため、パース失敗時にも Snapshot が残ってしまっていた)。
+    const snapshots = await listSnapshotsByMonitor(db(), monitor.id);
+    expect(snapshots).toHaveLength(0);
+  });
+});
+
+describe('processFeedItems: item URLs are re-checked against the SSRF policy (CodeRabbit review 2)', () => {
+  it('skips a feed item whose URL is blocked by the SSRF policy, without creating a Target/Change', async () => {
+    const { monitor } = await buildPipelineFixture({
+      sourceType: 'rss',
+      sourceUrl: 'https://example.com/ssrf-feed.xml',
+    });
+    const feedBody = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example Feed</title>
+    <item>
+      <title>Safe Post</title>
+      <link>https://example.com/posts/safe</link>
+      <guid>urn:uuid:safe</guid>
+    </item>
+    <item>
+      <title>Blocked Post</title>
+      <link>http://169.254.169.254/latest/meta-data</link>
+      <guid>urn:uuid:blocked</guid>
+    </item>
+  </channel>
+</rss>`;
+    const fetchStub = routedFetch({
+      'https://example.com/robots.txt': () => new Response('User-agent: *\nAllow: /', { status: 200 }),
+      'https://example.com/ssrf-feed.xml': () =>
+        new Response(feedBody, { status: 200, headers: { 'content-type': 'application/rss+xml' } }),
+    });
+
+    const result = await runMonitorCheck(
+      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      monitor.id,
+      { fetch: fetchStub, hostLimiter: grantingLimiter() },
+    );
+
+    expect(result.kind).toBe('completed');
+    // 安全な item のみ 'new' Change として検出される。
+    expect(result.changeIds).toHaveLength(1);
+
+    const targets = await listTargetsByMonitor(db(), monitor.id);
+    // feed 文書自体の Target (1) + 安全な item Target (1)。ブロックされた item の Target は作られない。
+    expect(targets).toHaveLength(2);
+    expect(targets.some((t) => t.url === 'http://169.254.169.254/latest/meta-data')).toBe(false);
+  });
+});
 
 describe('processFeedItems: duplicate dedupeKey recovery (at-least-once delivery, SPEC §17.7-8)', () => {
   it('recreates delivery/notify for a duplicate updated-item Change when a prior run crashed before delivery', async () => {

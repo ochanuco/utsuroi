@@ -29,26 +29,31 @@ function isHexDigit(ch: string): boolean {
  */
 export function normalizePercentEncoding(input: string): string {
   let out = '';
-  for (let i = 0; i < input.length; i++) {
+  for (let i = 0; i < input.length; ) {
     const ch = input[i] as string;
     if (ch === '%' && i + 2 < input.length && isHexDigit(input[i + 1] as string) && isHexDigit(input[i + 2] as string)) {
       const hex = input.slice(i + 1, i + 3);
       const code = parseInt(hex, 16);
       out += isUnreservedByte(code) ? String.fromCharCode(code) : `%${hex.toUpperCase()}`;
-      i += 2;
+      i += 3;
       continue;
     }
-    const code = ch.charCodeAt(0);
-    if (code > 0x7e) {
+    // codePointAt + 対応する文字列長で読むことで、非BMP文字 (サロゲートペア) を
+    // 上位/下位サロゲートに分割せず1文字として扱う (分割すると TextEncoder に不完全な
+    // サロゲートを渡すことになり、置換文字 U+FFFD へ化けてしまう)。
+    const codePoint = input.codePointAt(i) as number;
+    const fullChar = String.fromCodePoint(codePoint);
+    if (codePoint > 0x7e) {
       // 非ASCII: UTF-8バイト列へパーセントエンコード
-      const bytes = new TextEncoder().encode(ch);
+      const bytes = new TextEncoder().encode(fullChar);
       for (const b of bytes) out += `%${b.toString(16).toUpperCase().padStart(2, '0')}`;
-    } else if (code <= 0x20 || code === 0x7f) {
+    } else if (codePoint <= 0x20 || codePoint === 0x7f) {
       // 制御文字・空白
-      out += `%${code.toString(16).toUpperCase().padStart(2, '0')}`;
+      out += `%${codePoint.toString(16).toUpperCase().padStart(2, '0')}`;
     } else {
-      out += ch;
+      out += fullChar;
     }
+    i += fullChar.length;
   }
   return out;
 }

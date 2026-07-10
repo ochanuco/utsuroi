@@ -3,12 +3,19 @@
  * SPEC §14 / ADR-0007。webhook URL は決してログ・error message に平文で含めない。
  */
 import type { ChangeSummary, DiscordSendResult } from '../shared/contracts';
+import { checkUrlForSsrf } from '../net';
+
+/** SSRF ポリシーで拒否された webhook URL への送信を表す合成ステータス (実HTTPレスポンスではない) */
+const SSRF_BLOCKED_STATUS = 400;
 
 /** diffPreview を code block へ収める際の目標上限文字数 */
 const DIFF_PREVIEW_MAX_CHARS = 900;
 
 /** Discord embed description の上限 (Discord API 仕様) */
 const EMBED_DESCRIPTION_MAX = 4096;
+
+/** Discord embed title の上限 (Discord API 仕様) */
+const EMBED_TITLE_MAX = 256;
 
 const KIND_LABEL: Record<ChangeSummary['kind'], string> = {
   new: '新規検出',
@@ -55,7 +62,7 @@ export function buildDiscordPayload(change: ChangeSummary): object {
   const description = truncateToLength(lines.join('\n'), EMBED_DESCRIPTION_MAX);
 
   const embed: Record<string, unknown> = {
-    title: change.title ?? change.siteName,
+    title: truncateToLength(change.title ?? change.siteName, EMBED_TITLE_MAX),
     color: KIND_COLOR[change.kind],
     description,
     timestamp: change.detectedAt,
@@ -76,11 +83,6 @@ export function maskWebhookUrl(url: string): string {
   } catch {
     return `***${tail}`;
   }
-}
-
-function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
 }
 
 /** Retry-After ヘッダ、なければ JSON body の retry_after を読む */
@@ -108,14 +110,29 @@ async function extractRetryAfterSeconds(res: Response): Promise<number | null> {
  * Discord Webhook へ payload を POST する。
  * 200/204 は成功。429 は Retry-After を尊重して retryAfterSeconds に反映。
  * 5xx・ネットワークエラーはリトライ可能失敗、429以外の4xxは permanent 失敗として返す。
+ *
+ * 永続化される message は固定文言 + status のみとし、例外詳細やレスポンス本文の
+ * 断片は含めない (webhook URL 漏えい防止。仮に URL がエラー本文に反映されるような
+ * サービスであっても、そのボディを保存しないため安全側に倒す)。
  */
 export async function sendToDiscord(
   webhookUrl: string,
   payload: object,
   opts?: { fetch?: typeof fetch },
 ): Promise<DiscordSendResult> {
+  // 送信直前の再検証 (登録時だけでなく送信時にも SSRF ポリシーを適用する, SPEC §15)。
+  // 拒否は permanent failure 扱いとする (リトライしても結果は変わらないため)。
+  const ssrf = checkUrlForSsrf(webhookUrl);
+  if (!ssrf.allowed) {
+    return {
+      ok: false,
+      status: SSRF_BLOCKED_STATUS,
+      retryAfterSeconds: null,
+      message: 'discord webhook delivery failed: webhook url blocked by url safety policy',
+    };
+  }
+
   const doFetch = opts?.fetch ?? fetch;
-  const maskedUrl = maskWebhookUrl(webhookUrl);
 
   let res: Response;
   try {
@@ -124,12 +141,12 @@ export async function sendToDiscord(
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),
     });
-  } catch (err) {
+  } catch {
     return {
       ok: false,
       status: null,
       retryAfterSeconds: null,
-      message: `network error sending to discord webhook ${maskedUrl}: ${errorMessage(err)}`,
+      message: 'discord webhook delivery failed: network error',
     };
   }
 
@@ -143,21 +160,14 @@ export async function sendToDiscord(
       ok: false,
       status: 429,
       retryAfterSeconds,
-      message: `rate limited by discord webhook ${maskedUrl}`,
+      message: 'discord webhook delivery rate limited (429)',
     };
-  }
-
-  let bodySnippet = '';
-  try {
-    bodySnippet = (await res.text()).slice(0, 200);
-  } catch {
-    // レスポンスボディを読めなくても失敗を報告する
   }
 
   return {
     ok: false,
     status: res.status,
     retryAfterSeconds: null,
-    message: `discord webhook ${maskedUrl} responded ${res.status}${bodySnippet ? `: ${bodySnippet}` : ''}`,
+    message: `discord webhook delivery failed: unexpected status ${res.status}`,
   };
 }

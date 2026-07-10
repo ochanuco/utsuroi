@@ -64,7 +64,28 @@ describe('GET /api/jobs/:id/attempts', () => {
     const secondPageBody = await secondPageRes.json() as any;
     expect(secondPageBody.items).toHaveLength(3);
     expect(secondPageBody.total).toBe(7);
-    // pages are disjoint
-    expect(secondPageBody.items[0].attempt_index).not.toBe(body.items[0].attempt_index);
+
+    // every item within each page is unique, and the two pages are fully disjoint
+    // (not just their first elements) -- guards against an ORDER BY without a unique
+    // tie-breaker silently duplicating/skipping rows across pages.
+    const firstIndices = new Set<number>(body.items.map((item: { attempt_index: number }) => item.attempt_index));
+    const secondIndices = new Set<number>(
+      secondPageBody.items.map((item: { attempt_index: number }) => item.attempt_index),
+    );
+    expect(firstIndices.size).toBe(3);
+    expect(secondIndices.size).toBe(3);
+    expect([...secondIndices].some((index) => firstIndices.has(index))).toBe(false);
+
+    const thirdPageRes = await app.request(
+      `/api/jobs/${job.id}/attempts?limit=3&offset=6`,
+      { headers: authHeaders() },
+      testEnv()
+    );
+    const thirdPageBody = await thirdPageRes.json() as any;
+    expect(thirdPageBody.items).toHaveLength(1);
+    const thirdIndices = new Set<number>(thirdPageBody.items.map((item: { attempt_index: number }) => item.attempt_index));
+
+    const allIndices = new Set<number>([...firstIndices, ...secondIndices, ...thirdIndices]);
+    expect(allIndices.size).toBe(7);
   });
 });

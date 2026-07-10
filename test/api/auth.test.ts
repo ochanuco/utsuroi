@@ -36,6 +36,16 @@ describe('bearer auth (all /api/*)', () => {
     expect(res.status).toBe(200);
   });
 
+  it('accepts a case-insensitive "bearer" scheme (RFC 6750 scheme names are case-insensitive)', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request(
+      '/api/sites',
+      { headers: { authorization: 'bearer test-token' } },
+      testEnv()
+    );
+    expect(res.status).toBe(200);
+  });
+
   it('returns JSON 404 for unknown routes', async () => {
     const { app } = buildTestApp();
     const res = await app.request(

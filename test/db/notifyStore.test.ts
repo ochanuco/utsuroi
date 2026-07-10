@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { createD1NotifyStore, createDeliveryIfNew, insertChangeIfNew } from '../../src/db';
-import { buildFixture, db } from './helpers';
+import { buildFixture, db, FIXTURE_WEBHOOK_URL, TEST_WEBHOOK_ENC_KEY } from './helpers';
 
 describe('createD1NotifyStore (implements src/shared/contracts.ts NotifyStore)', () => {
   it('unknown delivery id returns null', async () => {
-    const store = createD1NotifyStore(db());
+    const store = createD1NotifyStore(db(), TEST_WEBHOOK_ENC_KEY);
     await expect(store.getPendingDelivery('does-not-exist')).resolves.toBeNull();
   });
 
   it('getPendingDelivery -> markDelivered -> re-fetch returns null (idempotent consumption)', async () => {
     const d = db();
-    const store = createD1NotifyStore(d);
+    const store = createD1NotifyStore(d, TEST_WEBHOOK_ENC_KEY);
     const { monitor, site, source, target, destination } = await buildFixture(d);
 
     const change = await insertChangeIfNew(d, {
@@ -26,7 +26,9 @@ describe('createD1NotifyStore (implements src/shared/contracts.ts NotifyStore)',
 
     const pending = await store.getPendingDelivery(delivery.row.id);
     expect(pending).not.toBeNull();
-    expect(pending?.webhookUrl).toBe(destination.webhookUrl);
+    // destination.webhookUrl is the encrypted-at-rest envelope; getPendingDelivery decrypts
+    // it back to the plaintext webhook URL that was originally encrypted in buildFixture().
+    expect(pending?.webhookUrl).toBe(FIXTURE_WEBHOOK_URL);
     expect(pending?.attemptCount).toBe(0);
     expect(pending?.change).toMatchObject({
       changeId: change.row.id,
@@ -47,7 +49,7 @@ describe('createD1NotifyStore (implements src/shared/contracts.ts NotifyStore)',
 
   it('a dead delivery is also treated as terminal (returns null)', async () => {
     const d = db();
-    const store = createD1NotifyStore(d);
+    const store = createD1NotifyStore(d, TEST_WEBHOOK_ENC_KEY);
     const { monitor, target, destination } = await buildFixture(d);
     const change = await insertChangeIfNew(d, {
       monitorId: monitor.id,
@@ -64,7 +66,7 @@ describe('createD1NotifyStore (implements src/shared/contracts.ts NotifyStore)',
 
   it('a failed (non-dead) delivery is still returned as a retry candidate', async () => {
     const d = db();
-    const store = createD1NotifyStore(d);
+    const store = createD1NotifyStore(d, TEST_WEBHOOK_ENC_KEY);
     const { monitor, target, destination } = await buildFixture(d);
     const change = await insertChangeIfNew(d, {
       monitorId: monitor.id,
@@ -79,5 +81,29 @@ describe('createD1NotifyStore (implements src/shared/contracts.ts NotifyStore)',
     const retryCandidate = await store.getPendingDelivery(delivery.row.id);
     expect(retryCandidate).not.toBeNull();
     expect(retryCandidate?.attemptCount).toBe(1);
+  });
+
+  it('atomically claims a delivery: a second concurrent getPendingDelivery call sees it as already claimed', async () => {
+    const d = db();
+    const store = createD1NotifyStore(d, TEST_WEBHOOK_ENC_KEY);
+    const { monitor, target, destination } = await buildFixture(d);
+    const change = await insertChangeIfNew(d, {
+      monitorId: monitor.id,
+      targetId: target.id,
+      targetUrl: target.url,
+      kind: 'updated',
+      dedupeKey: 'sha256:notify-4',
+    });
+    const delivery = await createDeliveryIfNew(d, change.row.id, destination.id);
+
+    // 1つ目の呼び出しが claim (pending -> sending) に成功する。
+    const first = await store.getPendingDelivery(delivery.row.id);
+    expect(first).not.toBeNull();
+
+    // 同じ delivery を指す2つ目の呼び出し (重複キューメッセージ・同時実行を模す) は
+    // status が既に 'sending' (かつ stale ではない) なので claim できず null を返す。
+    // これにより Discord への二重送信を防ぐ。
+    const second = await store.getPendingDelivery(delivery.row.id);
+    expect(second).toBeNull();
   });
 });

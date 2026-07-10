@@ -6,7 +6,8 @@
 import type { Context, Next } from 'hono';
 import type { Env } from '../shared/env';
 
-const BEARER_PREFIX = 'Bearer ';
+/** "Bearer <token>" のスキーム部分を大文字小文字非依存で受け付ける (RFC 6750 のスキーム名は case-insensitive) */
+const BEARER_HEADER_RE = /^Bearer[ \t]+(.+)$/i;
 
 /** 長さの差をできるだけ露呈しない定数時間文字列比較 */
 function timingSafeEqual(a: string, b: string): boolean {
@@ -26,7 +27,7 @@ function timingSafeEqual(a: string, b: string): boolean {
 export async function bearerAuth(c: Context<{ Bindings: Env }>, next: Next): Promise<Response | void> {
   const configuredToken = c.env.ADMIN_TOKEN;
   const header = c.req.header('authorization') ?? c.req.header('Authorization') ?? '';
-  const provided = header.startsWith(BEARER_PREFIX) ? header.slice(BEARER_PREFIX.length) : '';
+  const provided = BEARER_HEADER_RE.exec(header)?.[1] ?? '';
 
   if (!configuredToken || provided === '' || !timingSafeEqual(configuredToken, provided)) {
     return c.json({ error: { code: 'unauthorized', message: 'missing or invalid bearer token' } }, 401);
