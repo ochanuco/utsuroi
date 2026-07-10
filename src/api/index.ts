@@ -15,6 +15,7 @@ import { destinationsRoutes } from './routes/destinations';
 import { jobsRoutes } from './routes/jobs';
 import { monitorsRoutes } from './routes/monitors';
 import { sitesRoutes } from './routes/sites';
+import { snapshotsRoutes } from './routes/snapshots';
 import { sourcesRoutes } from './routes/sources';
 import { subscriptionsRoutes } from './routes/subscriptions';
 
@@ -40,6 +41,7 @@ export function createApp(opts: CreateAppOptions = {}): Hono<{ Bindings: Env }> 
   app.route('/api/monitors', monitorsRoutes({ monitorControlFactory: opts.monitorControlFactory }));
   app.route('/api/jobs', jobsRoutes());
   app.route('/api/changes', changesRoutes());
+  app.route('/api/snapshots', snapshotsRoutes());
   app.route('/api/destinations', destinationsRoutes());
   app.route('/api/subscriptions', subscriptionsRoutes());
   app.route('/api/audit-events', auditEventsRoutes());

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Utsuroi 管理画面</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="gate" class="gate hidden">
+    <div class="gate-card">
+      <h1>Utsuroi 管理画面</h1>
+      <p class="muted">管理トークンを入力してください。</p>
+      <form id="gate-form">
+        <label for="gate-token">ADMIN_TOKEN</label>
+        <input id="gate-token" type="password" autocomplete="off" required />
+        <button type="submit">ログイン</button>
+      </form>
+      <p id="gate-error" class="error hidden"></p>
+    </div>
+  </div>
+
+  <div id="app" class="app hidden">
+    <header class="topbar">
+      <div class="topbar-title">Utsuroi</div>
+      <nav class="topbar-nav">
+        <a href="#/sites">Sites</a>
+        <a href="#/destinations">Destinations</a>
+        <a href="#/audit-events">Audit Events</a>
+      </nav>
+      <button id="logout-button" class="button-ghost">ログアウト</button>
+    </header>
+    <main id="view" class="view"></main>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

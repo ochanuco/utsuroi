@@ -11,6 +11,7 @@ import type {
   RobotsEvaluationRow,
   RobotsPolicyRow,
   SiteRow,
+  SnapshotRow,
   SourceRow,
   SubscriptionRow,
 } from '../db';
@@ -95,6 +96,29 @@ export function serializeCheckAttempt(row: CheckAttemptRow) {
     error_message: row.errorMessage,
     started_at: row.startedAt,
     finished_at: row.finishedAt,
+    created_at: row.createdAt,
+  };
+}
+
+export function serializeSnapshot(row: SnapshotRow) {
+  return {
+    id: row.id,
+    monitor_id: row.monitorId,
+    target_id: row.targetId,
+    check_attempt_id: row.checkAttemptId,
+    fetched_at: row.fetchedAt,
+    http_status: row.httpStatus,
+    content_type: row.contentType,
+    etag: row.etag,
+    last_modified: row.lastModified,
+    body_hash: row.bodyHash,
+    normalized_hash: row.normalizedHash,
+    text_hash: row.textHash,
+    normalization_version: row.normalizationVersion,
+    // 生本文 (r2Key) を持つか否かのみを公開する。R2 の実キーはストレージ内部の詳細であり、
+    // 外部に露出する必要がない (GET /:id/body は本 API 内部で r2Key を解決して返す)。
+    has_body: row.r2Key !== null,
+    has_normalized_body: row.normalizedR2Key !== null,
     created_at: row.createdAt,
   };
 }
