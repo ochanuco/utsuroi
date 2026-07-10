@@ -2,7 +2,7 @@
  * レーン間契約インターフェース。
  * ここを変更できるのは親セッション（コーディネーター）のみ。
  */
-import type { ChangeKind, FailureClass, SourceType } from './types';
+import type { ChangeKind, CheckJobStatus, FailureClass, SourceType } from './types';
 
 // ---------------------------------------------------------------------------
 // Fetch (src/fetch/)
@@ -206,3 +206,45 @@ export interface NotifyStore {
 export type DiscordSendResult =
   | { ok: true }
   | { ok: false; status: number | null; retryAfterSeconds: number | null; message: string };
+
+// ---------------------------------------------------------------------------
+// Durable Object RPC 契約 (src/do/ が実装、src/api/ は Factory 注入で消費)
+// ---------------------------------------------------------------------------
+
+export interface MonitorControlStatus {
+  monitorId: string;
+  nextRunAt: string | null;
+  running: boolean;
+  paused: boolean;
+  lastResult: { status: CheckJobStatus; at: string } | null;
+}
+
+/** MonitorObject の RPC 面 (SPEC §11) */
+export interface MonitorControl {
+  /** 次回実行時刻を設定。null で Alarm 取消 (Policy Stop 時) */
+  schedule(nextRunAt: string | null): Promise<void>;
+  /** 手動実行。実行中ジョブがあれば started=false (直列化) */
+  runNow(): Promise<{ started: boolean; reason: string | null }>;
+  pause(): Promise<void>;
+  resume(): Promise<void>;
+  getStatus(): Promise<MonitorControlStatus>;
+}
+
+/** monitorId から MonitorControl を得る。API層はこれを注入可能にする */
+export type MonitorControlFactory = (monitorId: string) => MonitorControl;
+
+export interface HostLeaseResult {
+  granted: boolean;
+  leaseId: string | null;
+  /** granted=false のとき、再試行までの推奨待機 ms */
+  retryAfterMs: number | null;
+}
+
+/** HostObject の RPC 面 (SPEC §11)。キーは canonical origin */
+export interface HostLimiter {
+  acquire(): Promise<HostLeaseResult>;
+  release(
+    leaseId: string,
+    outcome: { failureClass: FailureClass | null; retryAfterSeconds: number | null },
+  ): Promise<void>;
+}
