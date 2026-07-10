@@ -44,3 +44,31 @@ export async function countSites(db: D1Database): Promise<number> {
   const row = await db.prepare(`SELECT COUNT(*) as count FROM sites`).first<{ count: number }>();
   return row?.count ?? 0;
 }
+
+/**
+ * Site削除。呼び出し側 (API層) が countSourcesBySite で配下のSourceが無いことを
+ * 事前に保証する (409ガード) ため、monitors/targets/changes等 (Source経由の子孫) は
+ * ここで考慮不要 (Sourceが0件ならFK上それらも0件のはず)。
+ *
+ * site_id を直接参照するテーブルのうち削除が必要なもの:
+ *  - fetcher_policies (UNIQUE site_id) とその entries
+ *  - robots_policies (site_id, NOT NULL)
+ *  - subscriptions (site_id, nullable)
+ * robots_evaluations は origin単位の共有キャッシュであり site_id を持たないため対象外
+ * (削除しない: 他Siteの同一originからも参照されうる)。
+ */
+export async function deleteSiteCascade(db: D1Database, siteId: string): Promise<boolean> {
+  const results = await db.batch([
+    db
+      .prepare(
+        `DELETE FROM fetcher_policy_entries WHERE fetcher_policy_id IN (SELECT id FROM fetcher_policies WHERE site_id = ?)`
+      )
+      .bind(siteId),
+    db.prepare(`DELETE FROM fetcher_policies WHERE site_id = ?`).bind(siteId),
+    db.prepare(`DELETE FROM robots_policies WHERE site_id = ?`).bind(siteId),
+    db.prepare(`DELETE FROM subscriptions WHERE site_id = ?`).bind(siteId),
+    db.prepare(`DELETE FROM sites WHERE id = ?`).bind(siteId),
+  ]);
+  const siteDeleteResult = results[results.length - 1];
+  return (siteDeleteResult?.meta?.changes ?? 0) > 0;
+}

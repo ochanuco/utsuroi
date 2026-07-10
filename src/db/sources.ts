@@ -48,3 +48,12 @@ export async function countSourcesBySite(db: D1Database, siteId: string): Promis
     .first<{ count: number }>();
   return row?.count ?? 0;
 }
+
+/**
+ * Source削除。呼び出し側 (API層) が countMonitorsBySource で配下のMonitorが無いことを
+ * 事前に保証する (409ガード) ため、ここでは単純な単一行DELETEでよい。
+ */
+export async function deleteSource(db: D1Database, id: string): Promise<boolean> {
+  const result = await db.prepare(`DELETE FROM sources WHERE id = ?`).bind(id).run();
+  return (result.meta?.changes ?? 0) > 0;
+}

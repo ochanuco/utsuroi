@@ -7,6 +7,7 @@ import {
   createRobotsEvaluation,
   createSite,
   createSource,
+  listAuditEventsBySubject,
   policyStopMonitor,
   upsertTarget,
 } from '../../src/db';
@@ -259,5 +260,73 @@ describe('GET /api/monitors/:id/jobs and /api/jobs/:id/attempts', () => {
     const attemptsBody = await attemptsRes.json() as any;
     expect(attemptsBody.items).toHaveLength(1);
     expect(attemptsBody.items[0]).toMatchObject({ fetcher_id: fetcherId, outcome: 'success', status_code: 200 });
+  });
+});
+
+describe('DELETE /api/monitors/:id (Site/Source/Monitor削除機能)', () => {
+  it('returns 404 for an unknown monitor id', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request('/api/monitors/nope', { method: 'DELETE', headers: authHeaders() }, testEnv());
+    expect(res.status).toBe(404);
+    const body = await res.json() as any;
+    expect(body.error.code).toBe('monitor_not_found');
+  });
+
+  it('calls schedule(null) on the injected MonitorControl, deletes the monitor (204), and records an audit event', async () => {
+    const fake = createFakeMonitorControlFactory();
+    const { app } = buildTestApp({ monitorControlFactory: fake.factory });
+    const { source } = await makeSiteAndSource();
+    const monitor = await (
+      await app.request(
+        '/api/monitors',
+        { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ source_id: source.id, interval_seconds: 60 }) },
+        testEnv()
+      )
+    ).json() as any;
+
+    const deleteRes = await app.request(
+      `/api/monitors/${monitor.id}`,
+      { method: 'DELETE', headers: authHeaders() },
+      testEnv()
+    );
+    expect(deleteRes.status).toBe(204);
+    // 204 No Content: body must be empty
+    expect(await deleteRes.text()).toBe('');
+
+    // schedule(null) was invoked (Alarm cancellation) via the injected MonitorControl fake.
+    expect(fake.state.scheduled.has(monitor.id)).toBe(true);
+    expect(fake.state.scheduled.get(monitor.id)).toBeNull();
+
+    const getRes = await app.request(`/api/monitors/${monitor.id}`, { headers: authHeaders() }, testEnv());
+    expect(getRes.status).toBe(404);
+
+    const events = await listAuditEventsBySubject(db(), monitor.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ action: 'monitor.delete', actor: 'admin', subject: monitor.id });
+  });
+
+  it('removes dependent jobs/targets so a re-created monitor for the same source starts clean', async () => {
+    const { app } = buildTestApp();
+    const { source } = await makeSiteAndSource();
+    const monitor = await (
+      await app.request(
+        '/api/monitors',
+        { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ source_id: source.id, interval_seconds: 60 }) },
+        testEnv()
+      )
+    ).json() as any;
+
+    await upsertTarget(db(), { monitorId: monitor.id, url: 'https://example.com/feed' });
+    await createCheckJobIfNew(db(), { monitorId: monitor.id, scheduledFor: new Date().toISOString() });
+
+    const deleteRes = await app.request(
+      `/api/monitors/${monitor.id}`,
+      { method: 'DELETE', headers: authHeaders() },
+      testEnv()
+    );
+    expect(deleteRes.status).toBe(204);
+
+    const jobsRes = await app.request(`/api/monitors/${monitor.id}/jobs`, { headers: authHeaders() }, testEnv());
+    expect(jobsRes.status).toBe(404); // monitor itself is gone
   });
 });

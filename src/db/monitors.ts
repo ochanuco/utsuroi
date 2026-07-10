@@ -124,3 +124,63 @@ export async function setMonitorLastChecked(
     .bind(lastCheckedAt, now, id)
     .run();
 }
+
+/** source配下にMonitorが存在するか (DELETE /api/sources/:id の409ガードに使う) */
+export async function countMonitorsBySource(db: D1Database, sourceId: string): Promise<number> {
+  const row = await db
+    .prepare(`SELECT COUNT(*) as count FROM monitors WHERE source_id = ?`)
+    .bind(sourceId)
+    .first<{ count: number }>();
+  return row?.count ?? 0;
+}
+
+/**
+ * Monitor削除 (関連する履歴も含めた完全カスケード)。D1 は FOREIGN KEY 制約を強制するため、
+ * 子行を先に削除してから親 (monitors 本体) を消す必要がある (db.batch でトランザクションにまとめる)。
+ *
+ * migrations/0001_init.sql の FK 関係から、monitors を直接/間接に参照するテーブルは
+ * targets / check_jobs / snapshots / changes / subscriptions であり、さらに:
+ *  - check_attempts.check_job_id (NOT NULL) → check_jobs
+ *  - check_attempts.target_id (NOT NULL) / snapshot_id (nullable) → targets / snapshots
+ *  - snapshots.target_id (NOT NULL) → targets
+ *  - snapshots.check_attempt_id (nullable) → check_attempts
+ *  - changes.snapshot_id / previous_snapshot_id (nullable) → snapshots
+ *  - deliveries.change_id (NOT NULL) → changes
+ * という依存がある。ここで check_attempts.snapshot_id → snapshots と
+ * snapshots.check_attempt_id → check_attempts は互いに (nullable) FK を持つ循環参照になっており、
+ * 単純な子→親の順序付けでは解決できない (どちらを先に削除しても、他方がまだ参照していれば
+ * FOREIGN KEY 制約違反になる: 実際にテストで検出した)。そのため削除前にこの循環を
+ * 断ち切る UPDATE (snapshots.check_attempt_id を NULL 化) を先に行う。
+ *
+ * 実際の削除順:
+ *   0. UPDATE snapshots SET check_attempt_id = NULL (循環参照を断つ)
+ *   1. deliveries   (このmonitorのchangesに紐づくもの)
+ *   2. check_attempts (このmonitorのcheck_jobsに紐づくもの)
+ *   3. changes      (1. の後: deliveriesがchangesを参照するため)
+ *   4. check_jobs   (2. の後: check_attemptsがcheck_jobsを参照するため)
+ *   5. snapshots    (2., 3. の後: check_attempts/changesがsnapshotsを参照するため)
+ *   6. targets      (2., 5. の後: check_attempts/snapshotsがtargetsを参照するため)
+ *   7. subscriptions(monitor_id=)
+ *   8. monitors 本体
+ * となる。snapshots の削除は当初の設計メモには明記されていなかったが、
+ * snapshots.monitor_id が NOT NULL FK であるため省略すると 8. で FK 違反になる。
+ */
+export async function deleteMonitorCascade(db: D1Database, monitorId: string): Promise<boolean> {
+  const results = await db.batch([
+    db.prepare(`UPDATE snapshots SET check_attempt_id = NULL WHERE monitor_id = ?`).bind(monitorId),
+    db
+      .prepare(`DELETE FROM deliveries WHERE change_id IN (SELECT id FROM changes WHERE monitor_id = ?)`)
+      .bind(monitorId),
+    db
+      .prepare(`DELETE FROM check_attempts WHERE check_job_id IN (SELECT id FROM check_jobs WHERE monitor_id = ?)`)
+      .bind(monitorId),
+    db.prepare(`DELETE FROM changes WHERE monitor_id = ?`).bind(monitorId),
+    db.prepare(`DELETE FROM check_jobs WHERE monitor_id = ?`).bind(monitorId),
+    db.prepare(`DELETE FROM snapshots WHERE monitor_id = ?`).bind(monitorId),
+    db.prepare(`DELETE FROM targets WHERE monitor_id = ?`).bind(monitorId),
+    db.prepare(`DELETE FROM subscriptions WHERE monitor_id = ?`).bind(monitorId),
+    db.prepare(`DELETE FROM monitors WHERE id = ?`).bind(monitorId),
+  ]);
+  const monitorDeleteResult = results[results.length - 1];
+  return (monitorDeleteResult?.meta?.changes ?? 0) > 0;
+}

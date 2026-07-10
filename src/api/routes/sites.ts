@@ -9,7 +9,9 @@ import type { FailureClass } from '../../shared/types';
 import { validateFetcherPolicy } from '../../fetch';
 import {
   countSites,
+  countSourcesBySite,
   createSite,
+  deleteSiteCascade,
   getFetcherPolicy,
   getRobotsPolicy,
   getSite,
@@ -19,7 +21,7 @@ import {
   recordAuditEvent,
   upsertRobotsPolicy,
 } from '../../db';
-import { badRequest, notFound } from '../errors';
+import { badRequest, conflict, notFound } from '../errors';
 import { parsePagination, parseWith, readJsonBody } from '../http';
 import { listRobotsPoliciesBySite } from '../rawQueries';
 import { serializeFetcherPolicy, serializeRobotsPolicy, serializeSite } from '../serialize';
@@ -96,6 +98,26 @@ export function sitesRoutes() {
     const site = await getSite(c.env.DB, c.req.param('id'));
     if (!site) throw notFound('site_not_found', 'site not found');
     return c.json(serializeSite(site));
+  });
+
+  router.delete('/:id', async (c) => {
+    const id = c.req.param('id');
+    const site = await getSite(c.env.DB, id);
+    if (!site) throw notFound('site_not_found', 'site not found');
+
+    const sourceCount = await countSourcesBySite(c.env.DB, id);
+    if (sourceCount > 0) {
+      throw conflict('site_has_sources', '先にSourceを削除してください');
+    }
+
+    await deleteSiteCascade(c.env.DB, id);
+    await recordAuditEvent(c.env.DB, {
+      actor: 'admin',
+      action: 'site.delete',
+      subject: id,
+    });
+
+    return c.json({ deleted: true });
   });
 
   router.put('/:id/fetcher-policy', async (c) => {

@@ -310,6 +310,36 @@ async function monitorDetailView(container, params) {
   } catch (err) {
     appendError(container, err);
   }
+
+  renderMonitorDangerZone(container, monitor);
+}
+
+// --- 危険操作 (Monitor削除) -----------------------------------------------------
+
+function renderMonitorDangerZone(container, monitor) {
+  const s = section('危険操作', []);
+  const errorEl = el('p', { class: 'error hidden' });
+  const deleteButton = el('button', {
+    class: 'button-danger',
+    text: 'このMonitorを削除',
+    on: {
+      click: async () => {
+        errorEl.classList.add('hidden');
+        if (!confirm(`Monitor "${monitor.id}" を削除します。関連する履歴も削除されます。よろしいですか?`)) return;
+        try {
+          await api.del(`/monitors/${encodeURIComponent(monitor.id)}`);
+        } catch (err) {
+          errorEl.textContent = err.message;
+          errorEl.classList.remove('hidden');
+          return;
+        }
+        navigate(`#/sites/${encodeURIComponent(monitor.site_id)}`);
+      },
+    },
+  });
+  s.appendChild(deleteButton);
+  s.appendChild(errorEl);
+  container.appendChild(s);
 }
 
 registerRoute('/monitors/:id', monitorDetailView);

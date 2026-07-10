@@ -7,11 +7,13 @@ import type { Env } from '../../shared/env';
 import type { MonitorControlFactory } from '../../shared/contracts';
 import {
   createMonitor,
+  deleteMonitorCascade,
   getMonitor,
   getRobotsEvaluation,
   getSource,
   listCheckJobsByMonitor,
   listMonitorsBySite,
+  recordAuditEvent,
   updateMonitorStatus,
 } from '../../db';
 import { createDefaultMonitorControlFactory } from '../monitorControl';
@@ -120,6 +122,29 @@ export function monitorsRoutes(opts: MonitorsRoutesOptions = {}) {
 
     const updated = await getMonitor(c.env.DB, monitorId);
     return c.json(serializeMonitor(updated!));
+  });
+
+  router.delete('/:id', async (c) => {
+    const monitorId = c.req.param('id');
+    const monitor = await getMonitor(c.env.DB, monitorId);
+    if (!monitor) throw notFound('monitor_not_found', 'monitor not found');
+
+    // Alarmを取消する (Policy Stop 時の schedule(null) と同じ操作)。DO側のストレージに残る
+    // スケジュール等の残骸は、対応する monitorId が呼ばれなくなる以上無害なので放置してよい
+    // (DOインスタンス自体の物理削除・ストレージのpurgeは本スコープ外)。
+    const control = resolveFactory(c.env)(monitorId);
+    await control.schedule(null);
+
+    await deleteMonitorCascade(c.env.DB, monitorId);
+
+    await recordAuditEvent(c.env.DB, {
+      actor: 'admin',
+      action: 'monitor.delete',
+      subject: monitorId,
+      payload: { siteId: monitor.siteId, sourceId: monitor.sourceId },
+    });
+
+    return c.body(null, 204);
   });
 
   router.get('/:id/status', async (c) => {

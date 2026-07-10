@@ -6,8 +6,17 @@ import { z } from 'zod';
 import type { Env } from '../../shared/env';
 import type { DnsResolver } from '../../net';
 import { checkUrlForSsrf, resolveAndCheck } from '../../net';
-import { countSourcesBySite, createSource, getSite, getSource, listSourcesBySite } from '../../db';
-import { badRequest, notFound } from '../errors';
+import {
+  countMonitorsBySource,
+  countSourcesBySite,
+  createSource,
+  deleteSource,
+  getSite,
+  getSource,
+  listSourcesBySite,
+  recordAuditEvent,
+} from '../../db';
+import { badRequest, conflict, notFound } from '../errors';
 import { parsePagination, parseWith, readJsonBody } from '../http';
 import { serializeSource } from '../serialize';
 
@@ -60,6 +69,27 @@ export function sourcesRoutes(opts: { ssrfResolver?: DnsResolver } = {}) {
     });
     const total = await countSourcesBySite(c.env.DB, siteId);
     return c.json({ items: sources.map(serializeSource), total });
+  });
+
+  router.delete('/:id', async (c) => {
+    const id = c.req.param('id');
+    const source = await getSource(c.env.DB, id);
+    if (!source) throw notFound('source_not_found', 'source not found');
+
+    const monitorCount = await countMonitorsBySource(c.env.DB, id);
+    if (monitorCount > 0) {
+      throw conflict('source_has_monitors', '先にMonitorを削除してください');
+    }
+
+    await deleteSource(c.env.DB, id);
+    await recordAuditEvent(c.env.DB, {
+      actor: 'admin',
+      action: 'source.delete',
+      subject: id,
+      payload: { siteId: source.siteId },
+    });
+
+    return c.json({ deleted: true });
   });
 
   return router;

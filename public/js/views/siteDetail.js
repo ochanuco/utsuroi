@@ -106,12 +106,44 @@ async function renderSourcesSection(container, siteId, onSourcesChanged) {
 
   const table = el('table');
   table.appendChild(
-    el('thead', {}, [el('tr', {}, [el('th', { text: '種別' }), el('th', { text: 'URL' }), el('th', { text: '作成日時' })])])
+    el('thead', {}, [
+      el('tr', {}, [
+        el('th', { text: '種別' }),
+        el('th', { text: 'URL' }),
+        el('th', { text: '作成日時' }),
+        el('th', {}),
+      ]),
+    ])
   );
   const tbody = el('tbody');
   for (const source of data.items) {
+    const deleteButton = el('button', {
+      class: 'button-danger',
+      text: '削除',
+      on: {
+        click: async () => {
+          if (!confirm(`Source "${source.url}" を削除します。関連する履歴も削除されます。よろしいですか?`)) return;
+          try {
+            await api.del(`/sources/${encodeURIComponent(source.id)}`);
+          } catch (err) {
+            alert(err.message);
+            return;
+          }
+          try {
+            await onSourcesChanged();
+          } catch (err) {
+            alert(`削除は成功しましたが、一覧の更新に失敗しました: ${err.message}`);
+          }
+        },
+      },
+    });
     tbody.appendChild(
-      el('tr', {}, [el('td', { text: source.type }), el('td', { text: source.url }), el('td', { text: formatDateTime(source.created_at) })])
+      el('tr', {}, [
+        el('td', { text: source.type }),
+        el('td', { text: source.url }),
+        el('td', { text: formatDateTime(source.created_at) }),
+        el('td', {}, [deleteButton]),
+      ])
     );
   }
   table.appendChild(tbody);
@@ -127,10 +159,21 @@ function fetcherRowEditor(entry, availableFetchers, onRemove) {
   // fetchers はシード管理のマスタ (GET /api/fetchers)。未登録IDはAPIが400を返すため選択式にする。
   const fetcherIdInput = el('select', { attrs: { required: true } });
   fetcherIdInput.appendChild(el('option', { attrs: { value: '' }, text: '選択してください' }));
+  const knownIds = new Set(availableFetchers.map((f) => f.id));
   const ids = availableFetchers.map((f) => f.id);
-  if (entry.fetcher_id && !ids.includes(entry.fetcher_id)) ids.unshift(entry.fetcher_id);
+  const isUnknownExisting = entry.fetcher_id && !knownIds.has(entry.fetcher_id);
+  if (isUnknownExisting) ids.unshift(entry.fetcher_id);
   for (const id of ids) {
-    fetcherIdInput.appendChild(el('option', { attrs: { value: id }, text: id }));
+    // レビュー指摘: マスタに無い既存entryのfetcher_idは、選択肢から静かに消したり
+    // 別のIDとして扱ったりせず、「未登録」であることを明示した上でdisabledにする
+    // (選び直しは強制するが、保存されている値自体は読み取り時に見える形で残す)。
+    const unknown = !knownIds.has(id);
+    fetcherIdInput.appendChild(
+      el('option', {
+        attrs: unknown ? { value: id, disabled: true } : { value: id },
+        text: unknown ? `${id} (未登録)` : id,
+      })
+    );
   }
   fetcherIdInput.value = entry.fetcher_id ?? '';
 
@@ -173,6 +216,9 @@ async function renderFetcherPolicySection(container, siteId) {
 
   let policy = { allow_list: [], order_list: [] };
   let availableFetchers = [];
+  // レビュー指摘: fetchers取得 (マスタ一覧) の失敗を「0件」と区別できず、無言で空selectに
+  // なってしまっていた。取得失敗フラグを保持し、下で明示的にエラー表示 + 編集不可にする。
+  let fetchersFetchFailed = false;
   try {
     const [policyResult, fetchersResult] = await Promise.allSettled([
       api.get(`/sites/${encodeURIComponent(siteId)}/fetcher-policy`),
@@ -185,6 +231,8 @@ async function renderFetcherPolicySection(container, siteId) {
     }
     if (fetchersResult.status === 'fulfilled') {
       availableFetchers = fetchersResult.value.items ?? [];
+    } else {
+      fetchersFetchFailed = true;
     }
   } catch (err) {
     if (err.status !== 404) throw err;
@@ -234,6 +282,7 @@ async function renderFetcherPolicySection(container, siteId) {
     rowsContainer.appendChild(rowEditor.node);
   }
 
+  const knownFetcherIds = new Set(availableFetchers.map((f) => f.id));
   const errorEl = el('p', { class: 'error hidden' });
   const editForm = el('form', {
     on: {
@@ -241,6 +290,17 @@ async function renderFetcherPolicySection(container, siteId) {
         event.preventDefault();
         errorEl.classList.add('hidden');
         const entries = rows.map((r) => r.read()).filter((e) => e.fetcher_id !== '');
+
+        // レビュー指摘: マスタに無い (未登録) fetcher_idが行に残ったまま保存しようとした場合、
+        // サーバー側の unknown_fetcher 400 に頼らず、クライアント側でも事前に検出して
+        // 送信自体をブロックする (どの行が未登録かをここで明示する)。
+        const unknownIds = entries.filter((e) => !knownFetcherIds.has(e.fetcher_id)).map((e) => e.fetcher_id);
+        if (unknownIds.length > 0) {
+          errorEl.textContent = `未登録のFetcher IDが含まれています: ${unknownIds.join(', ')}。該当行を選び直すか削除してください。`;
+          errorEl.classList.remove('hidden');
+          return;
+        }
+
         const body = {
           allow_list: entries.map((e) => e.fetcher_id),
           order_list: entries.map((e) => ({ fetcher_id: e.fetcher_id, proceed_on: e.proceed_on.length ? e.proceed_on : undefined })),
@@ -272,11 +332,25 @@ async function renderFetcherPolicySection(container, siteId) {
   for (const entry of policy.order_list) addRow(entry);
   if (policy.order_list.length === 0) addRow();
 
+  if (fetchersFetchFailed) {
+    // レビュー指摘: Fetcherマスタの取得に失敗した状態で編集を許可すると、選択肢が
+    // 実質空 (プレースホルダのみ) のまま保存されてしまう恐れがあるため、失敗を明示した上で
+    // 編集自体を不可にする (トグルボタンを無効化)。
+    s.appendChild(
+      el('p', {
+        class: 'error',
+        text: 'Fetcherマスタ一覧 (GET /api/fetchers) の取得に失敗しました。編集内容が正しく検証できないため、Fetcher Policyの編集は無効化されています。ページを再読み込みしてください。',
+      })
+    );
+  }
+
   const toggleButton = el('button', {
     class: 'button-ghost',
     text: 'Fetcher Policyを編集',
+    attrs: fetchersFetchFailed ? { disabled: true } : {},
     on: {
       click: () => {
+        if (fetchersFetchFailed) return;
         editorWrap.classList.toggle('hidden');
         toggleButton.textContent = editorWrap.classList.contains('hidden') ? 'Fetcher Policyを編集' : '編集を閉じる';
       },
@@ -694,6 +768,37 @@ async function siteDetailView(container, params) {
   } catch (err) {
     appendError(container, err);
   }
+
+  renderSiteDangerZone(container, site);
+}
+
+// --- 危険操作 (Site削除) -------------------------------------------------------
+
+function renderSiteDangerZone(container, site) {
+  const s = section('危険操作', []);
+  const errorEl = el('p', { class: 'error hidden' });
+  const deleteButton = el('button', {
+    class: 'button-danger',
+    text: 'このSiteを削除',
+    on: {
+      click: async () => {
+        errorEl.classList.add('hidden');
+        if (!confirm(`Site "${site.name}" を削除します。関連する履歴も削除されます。よろしいですか?`)) return;
+        try {
+          await api.del(`/sites/${encodeURIComponent(site.id)}`);
+        } catch (err) {
+          errorEl.textContent = err.message;
+          errorEl.classList.remove('hidden');
+          return;
+        }
+        navigate('#/sites');
+      },
+    },
+  });
+  s.appendChild(el('p', { class: 'muted', text: '配下にSourceが残っている場合は削除できません (先にSourceを削除してください)。' }));
+  s.appendChild(deleteButton);
+  s.appendChild(errorEl);
+  container.appendChild(s);
 }
 
 registerRoute('/sites/:id', siteDetailView);
