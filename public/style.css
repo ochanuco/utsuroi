@@ -119,6 +119,25 @@ h2 {
   margin-top: 0;
 }
 
+/* Site詳細の見出し行 (見出し + 名前変更ボタン / インライン編集フォーム) */
+.site-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.site-title-row h2 {
+  margin: 0;
+}
+.site-title-row .button-ghost {
+  margin-top: 0;
+}
+.site-title-row .error {
+  width: 100%;
+  margin: 0;
+}
+
 .section {
   background: var(--surface);
   border: 1px solid var(--border);

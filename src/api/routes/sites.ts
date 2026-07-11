@@ -19,6 +19,7 @@ import {
   listSites,
   putFetcherPolicy,
   recordAuditEvent,
+  updateSiteName,
   upsertRobotsPolicy,
 } from '../../db';
 import { badRequest, conflict, notFound } from '../errors';
@@ -47,6 +48,12 @@ const createSiteSchema = z.object({
   name: z.string().min(1),
   primary_origin: z.string().url().nullable().optional(),
   canonical_origins: z.array(z.string().url()).optional(),
+});
+
+// 現状変更できるのは name のみ (primary_origin の変更は robots/fetcher policy への影響が
+// 大きいため、必要になったら別途設計する)。trim してから検証し、空白のみの名前を弾く。
+const updateSiteSchema = z.object({
+  name: z.string().trim().min(1).max(200),
 });
 
 const fetcherPolicyEntrySchema = z.object({
@@ -98,6 +105,29 @@ export function sitesRoutes() {
     const site = await getSite(c.env.DB, c.req.param('id'));
     if (!site) throw notFound('site_not_found', 'site not found');
     return c.json(serializeSite(site));
+  });
+
+  router.patch('/:id', async (c) => {
+    const id = c.req.param('id');
+    const body = parseWith(updateSiteSchema, await readJsonBody(c));
+
+    const before = await getSite(c.env.DB, id);
+    if (!before) throw notFound('site_not_found', 'site not found');
+
+    // 名前が変わらない場合は更新もaudit記録もせずそのまま返す (no-op)。
+    if (body.name === before.name) return c.json(serializeSite(before));
+
+    const updated = await updateSiteName(c.env.DB, id, body.name);
+    if (!updated) throw notFound('site_not_found', 'site not found');
+
+    await recordAuditEvent(c.env.DB, {
+      actor: 'admin',
+      action: 'site.rename',
+      subject: id,
+      payload: { from: before.name, to: body.name },
+    });
+
+    return c.json(serializeSite(updated));
   });
 
   router.delete('/:id', async (c) => {
