@@ -117,7 +117,7 @@ async function changeDetailView(container, params) {
 
   container.appendChild(
     el('p', { class: 'breadcrumbs' }, [
-      el('a', { attrs: { href: `#/monitors/${encodeURIComponent(change.monitor_id)}` }, text: '← Monitor詳細へ' }),
+      el('a', { attrs: { href: `#/monitors/${encodeURIComponent(change.monitor_id)}` }, text: '← 監視詳細へ' }),
     ])
   );
   container.appendChild(el('h2', { text: `Change: ${change.kind}` }));

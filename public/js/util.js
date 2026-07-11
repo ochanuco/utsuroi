@@ -89,6 +89,31 @@ export function badge(status) {
   return el('span', { class: `badge badge-${status}`, text: status });
 }
 
+// UI上ではMonitorという独立概念を隠し「Sourceの監視状態」として見せる (report参照)。
+// 内部のstatus値・APIの識別子は変更せず、表示用ラベルのみ日本語化する。
+const MONITOR_STATUS_LABELS = {
+  active: '稼働中',
+  paused: '一時停止',
+  blocked_by_robots: 'robotsにより停止',
+  failing: '失敗中',
+};
+
+export function monitorStatusLabel(status) {
+  return MONITOR_STATUS_LABELS[status] ?? status;
+}
+
+/** 監視状態バッジ。色分けは既存の badge-<status> CSS (badge-active/paused/blocked_by_robots/failing) を再利用する。 */
+export function monitorStatusBadge(status) {
+  return el('span', { class: `badge badge-${status}`, text: monitorStatusLabel(status) });
+}
+
+/** interval_seconds (秒) を分表示に整形する。60で割り切れない場合は秒のまま表示する。 */
+export function intervalLabel(intervalSeconds) {
+  if (typeof intervalSeconds !== 'number' || !Number.isFinite(intervalSeconds)) return '—';
+  if (intervalSeconds > 0 && intervalSeconds % 60 === 0) return `${intervalSeconds / 60}分毎`;
+  return `${intervalSeconds}秒毎`;
+}
+
 export function fieldRow(children) {
   return el('div', { class: 'field-row' }, children);
 }

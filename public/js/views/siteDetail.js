@@ -1,9 +1,9 @@
 /**
  * #/sites/:id : Site詳細
- *  - Sources 一覧/作成
+ *  - Sources 一覧 + 監視状態の統合カード表示 (Monitorという別概念をUIから隠し、
+ *    「Sourceの監視状態」として見せる。詳細な実行履歴・差分は #/monitors/:id へ)
  *  - Fetcher Policy 表示・編集
  *  - robots Override 管理 (ADR-0009 Override UI)
- *  - Monitor 一覧/作成 (詳細は #/monitors/:id へ)
  */
 import { api } from '../api.js';
 import { registerRoute } from '../router.js';
@@ -15,6 +15,8 @@ import {
   fieldRow,
   formatDateTime,
   badge,
+  monitorStatusBadge,
+  intervalLabel,
   renderLoading,
   renderError,
   appendError,
@@ -42,26 +44,251 @@ const FAILURE_CLASSES = [
 
 const SOURCE_TYPES = ['page', 'rss', 'atom', 'sitemap', 'sitemap-index'];
 
-// --- Sources ---------------------------------------------------------------
+// --- Sources (+ 監視状態の統合表示) -------------------------------------------
+//
+// 実運用ではMonitor:Source≒1:1のため、UIからMonitorという別概念を隠し、各Sourceカードに
+// 「監視状態」として統合表示する (ユーザーフィードバック: 「Site-SourceはいいがMonitorが
+// 分かりづらい」への対応)。データ上Source:Monitorが1:Nになるケースも捨象せず、2件目以降は
+// カード内の折りたたみに逃がす (renderExtraMonitorsToggle)。
 
-async function renderSourcesSection(container, siteId, onSourcesChanged) {
-  const s = section('Sources', []);
-  container.appendChild(s);
-  renderLoading(s);
+/** 監視あり: 今すぐ実行・一時停止/再開・履歴/差分・監視を削除 */
+function renderMonitorActionsRow(monitor, hideError, showError, reload) {
+  const runButton = el('button', {
+    class: 'button-ghost',
+    text: '今すぐ実行',
+    on: {
+      click: async () => {
+        hideError();
+        try {
+          await api.post(`/monitors/${encodeURIComponent(monitor.id)}/run`);
+        } catch (err) {
+          showError(`実行できませんでした: ${err.message}`);
+          return;
+        }
+        await reload();
+      },
+    },
+  });
 
-  let data;
-  try {
-    data = await api.get(`/sources?site_id=${encodeURIComponent(siteId)}&limit=200`);
-  } catch (err) {
-    // 取得失敗と0件を区別する: ここで失敗を確定させ、呼び出し元 (Monitorsセクション) にも
-    // 「取得失敗」であることを伝播できるよう { failed: true } を返す (例外は投げない)。
-    clear(s);
-    s.appendChild(el('h3', { text: 'Sources' }));
-    appendError(s, err);
-    return { sources: [], failed: true };
+  const isPaused = monitor.status === 'paused';
+  const pauseResumeButton = el('button', {
+    class: 'button-ghost',
+    text: isPaused ? '再開' : '一時停止',
+    on: {
+      click: async () => {
+        hideError();
+        const action = isPaused ? 'resume' : 'pause';
+        try {
+          await api.post(`/monitors/${encodeURIComponent(monitor.id)}/${action}`);
+        } catch (err) {
+          showError(`${isPaused ? '再開' : '一時停止'}に失敗しました: ${err.message}`);
+          return;
+        }
+        await reload();
+      },
+    },
+  });
+
+  const historyButton = el('button', {
+    class: 'button-ghost',
+    text: '履歴・差分',
+    on: { click: () => navigate(`#/monitors/${encodeURIComponent(monitor.id)}`) },
+  });
+
+  const deleteButton = el('button', {
+    class: 'button-danger',
+    text: '監視を削除',
+    on: {
+      click: async () => {
+        hideError();
+        if (!confirm('この監視を削除します。実行履歴・検出済みのChangeも削除されます。よろしいですか?')) return;
+        try {
+          await api.del(`/monitors/${encodeURIComponent(monitor.id)}`);
+        } catch (err) {
+          showError(`監視の削除に失敗しました: ${err.message}`);
+          return;
+        }
+        await reload();
+      },
+    },
+  });
+
+  return el('div', { class: 'button-row source-card-actions' }, [runButton, pauseResumeButton, historyButton, deleteButton]);
+}
+
+/** 監視状態を1行で: バッジ + 間隔 + 次回実行。blocked_by_robots時は停止理由も短く添える */
+function renderMonitorStatusLine(monitor) {
+  const frag = document.createDocumentFragment();
+  const line = el('p', { class: 'source-monitor-line' }, [
+    '監視: ',
+    monitorStatusBadge(monitor.status),
+    `・${intervalLabel(monitor.interval_seconds)}・次回 ${formatDateTime(monitor.next_run_at)}`,
+  ]);
+  frag.appendChild(line);
+
+  if (monitor.status === 'blocked_by_robots') {
+    const reason = el('p', { class: 'muted source-stop-reason' }, [
+      monitor.stop_reason ?? '(停止理由は記録されていません)',
+      ' ',
+      el('a', { attrs: { href: `#/monitors/${encodeURIComponent(monitor.id)}` }, text: '詳細（判定根拠）' }),
+    ]);
+    frag.appendChild(reason);
   }
-  clear(s);
-  s.appendChild(el('h3', { text: 'Sources' }));
+  return frag;
+}
+
+/** 同一Sourceに複数Monitorが付く (データ上あり得る) 場合、2件目以降は折りたたみへ逃がす */
+function renderExtraMonitorsToggle(extraMonitors) {
+  const wrap = el('div', {});
+  const listWrap = el('div', { class: 'hidden' });
+  const toggle = el('button', {
+    class: 'expand-toggle',
+    text: `他${extraMonitors.length}件の監視`,
+    on: {
+      click: (event) => {
+        event.preventDefault();
+        listWrap.classList.toggle('hidden');
+      },
+    },
+  });
+
+  const table = el('table');
+  table.appendChild(
+    el('thead', {}, [
+      el('tr', {}, [el('th', { text: '状態' }), el('th', { text: '間隔' }), el('th', { text: '次回実行' }), el('th', {})]),
+    ])
+  );
+  const tbody = el('tbody');
+  for (const monitor of extraMonitors) {
+    tbody.appendChild(
+      el('tr', {}, [
+        el('td', {}, [monitorStatusBadge(monitor.status)]),
+        el('td', { text: intervalLabel(monitor.interval_seconds) }),
+        el('td', { text: formatDateTime(monitor.next_run_at) }),
+        el('td', {}, [
+          el('button', {
+            class: 'button-ghost',
+            text: '詳細',
+            on: { click: () => navigate(`#/monitors/${encodeURIComponent(monitor.id)}`) },
+          }),
+        ]),
+      ])
+    );
+  }
+  table.appendChild(tbody);
+  listWrap.appendChild(table);
+  wrap.appendChild(toggle);
+  wrap.appendChild(listWrap);
+  return wrap;
+}
+
+/** 監視なし: 「監視を開始」インラインフォーム (間隔・分、既定60) */
+function renderStartMonitorForm(source, hideError, showError, reload) {
+  const intervalInput = el('input', {
+    class: 'source-interval-input',
+    attrs: { type: 'number', min: 1, step: 1, required: true },
+  });
+  intervalInput.value = '60';
+
+  const form = el('form', {
+    class: 'inline-form',
+    on: {
+      submit: async (event) => {
+        event.preventDefault();
+        hideError();
+        const minutes = Number(intervalInput.value);
+        if (!Number.isFinite(minutes) || minutes <= 0) {
+          showError('監視間隔は正の数 (分) で入力してください。');
+          return;
+        }
+        try {
+          await api.post('/monitors', { source_id: source.id, interval_seconds: Math.round(minutes * 60) });
+        } catch (err) {
+          showError(`監視の開始に失敗しました: ${err.message}`);
+          return;
+        }
+        await reload();
+      },
+    },
+  });
+  form.appendChild(el('span', { class: 'muted', text: '監視: なし  間隔: ' }));
+  form.appendChild(intervalInput);
+  form.appendChild(el('span', { class: 'muted', text: ' 分 ' }));
+  form.appendChild(el('button', { attrs: { type: 'submit' }, text: '監視を開始' }));
+  return form;
+}
+
+function renderSourceDeleteButton(source, hideError, showError, reload) {
+  return el('button', {
+    class: 'button-danger',
+    text: 'Sourceを削除',
+    on: {
+      click: async () => {
+        hideError();
+        if (!confirm(`Source "${source.url}" を削除します。関連する履歴も削除されます。よろしいですか?`)) return;
+        try {
+          await api.del(`/sources/${encodeURIComponent(source.id)}`);
+        } catch (err) {
+          showError(`削除に失敗しました: ${err.message}`);
+          return;
+        }
+        await reload();
+      },
+    },
+  });
+}
+
+function renderSourceCard(source, monitorsForSource, monitorsFetchFailed, onSourcesChanged) {
+  const card = el('div', { class: 'source-card' });
+  const errorEl = el('p', { class: 'error hidden' });
+  const hideError = () => errorEl.classList.add('hidden');
+  const showError = (msg) => {
+    errorEl.textContent = msg;
+    errorEl.classList.remove('hidden');
+  };
+  const reload = async () => {
+    try {
+      await onSourcesChanged();
+    } catch (err) {
+      showError(`操作は成功しましたが、一覧の更新に失敗しました: ${err.message}`);
+    }
+  };
+
+  card.appendChild(
+    el('div', { class: 'source-card-header' }, [
+      el('span', { class: 'badge', text: source.type }),
+      el('span', { class: 'source-card-url', text: source.url }),
+    ])
+  );
+
+  if (monitorsFetchFailed) {
+    card.appendChild(
+      el('p', { class: 'muted', text: '監視状態の取得に失敗したため表示できません。ページを再読み込みしてください。' })
+    );
+    card.appendChild(errorEl);
+    return card;
+  }
+
+  if (monitorsForSource.length === 0) {
+    card.appendChild(renderStartMonitorForm(source, hideError, showError, reload));
+    card.appendChild(el('div', { class: 'button-row' }, [renderSourceDeleteButton(source, hideError, showError, reload)]));
+  } else {
+    const [primary, ...rest] = monitorsForSource;
+    card.appendChild(renderMonitorStatusLine(primary));
+    card.appendChild(renderMonitorActionsRow(primary, hideError, showError, reload));
+    if (rest.length > 0) card.appendChild(renderExtraMonitorsToggle(rest));
+    card.appendChild(
+      el('p', { class: 'muted source-delete-hint', text: '監視を削除するとSourceを削除できるようになります。' })
+    );
+  }
+
+  card.appendChild(errorEl);
+  return card;
+}
+
+function renderAddSourceForm(siteId, onSourcesChanged) {
+  const wrap = el('div', { class: 'source-add-form' });
+  wrap.appendChild(el('h4', { text: 'Sourceを追加' }));
 
   const typeSelect = el(
     'select',
@@ -69,7 +296,11 @@ async function renderSourcesSection(container, siteId, onSourcesChanged) {
     SOURCE_TYPES.map((t) => el('option', { attrs: { value: t }, text: t }))
   );
   const urlInput = el('input', { attrs: { type: 'url', required: true, placeholder: 'https://example.com/feed.xml' } });
+  const intervalInput = el('input', {
+    attrs: { type: 'number', min: 1, step: 1, placeholder: '空欄なら監視なしで作成' },
+  });
   const errorEl = el('p', { class: 'error hidden' });
+
   const form = el('form', {
     on: {
       submit: async (event) => {
@@ -77,14 +308,47 @@ async function renderSourcesSection(container, siteId, onSourcesChanged) {
         errorEl.classList.add('hidden');
         const url = urlInput.value.trim();
         if (!url) return;
+        const minutesRaw = intervalInput.value.trim();
+
+        let source;
         try {
-          await api.post('/sources', { site_id: siteId, type: typeSelect.value, url });
+          source = await api.post('/sources', { site_id: siteId, type: typeSelect.value, url });
         } catch (err) {
           errorEl.textContent = `作成に失敗しました: ${err.message}`;
           errorEl.classList.remove('hidden');
           return;
         }
+
+        if (minutesRaw !== '') {
+          const minutes = Number(minutesRaw);
+          if (!Number.isFinite(minutes) || minutes <= 0) {
+            // Sourceの作成自体は既に成功している。監視間隔の指定が不正なだけなので、
+            // Source作成の成功と監視未開始であることの両方を明示した上で一覧は更新する。
+            errorEl.textContent = 'Sourceは作成済みですが、監視間隔は正の数 (分) で入力してください（監視は開始されていません）。';
+            errorEl.classList.remove('hidden');
+            try {
+              await onSourcesChanged();
+            } catch {
+              // 一覧再取得の失敗より上記メッセージを優先して表示したままにする。
+            }
+            return;
+          }
+          try {
+            await api.post('/monitors', { source_id: source.id, interval_seconds: Math.round(minutes * 60) });
+          } catch (err) {
+            errorEl.textContent = `Sourceは作成済みですが、監視の開始に失敗しました: ${err.message}`;
+            errorEl.classList.remove('hidden');
+            try {
+              await onSourcesChanged();
+            } catch {
+              // 一覧再取得の失敗より上記メッセージを優先して表示したままにする。
+            }
+            return;
+          }
+        }
+
         urlInput.value = '';
+        intervalInput.value = '';
         try {
           await onSourcesChanged();
         } catch (err) {
@@ -94,63 +358,73 @@ async function renderSourcesSection(container, siteId, onSourcesChanged) {
       },
     },
   });
-  form.appendChild(fieldRow([field('種別', typeSelect), field('URL', urlInput)]));
-  form.appendChild(el('button', { attrs: { type: 'submit' }, text: 'Source作成' }));
+  form.appendChild(
+    fieldRow([field('種別', typeSelect), field('URL', urlInput), field('監視間隔 (分・空欄なら監視なし)', intervalInput)])
+  );
+  form.appendChild(el('button', { attrs: { type: 'submit' }, text: 'Sourceを追加' }));
   form.appendChild(errorEl);
-  s.appendChild(form);
+  wrap.appendChild(form);
+  return wrap;
+}
 
-  if (data.items.length === 0) {
-    s.appendChild(el('p', { class: 'empty', text: 'Sourceがまだ登録されていません。' }));
-    return { sources: [], failed: false };
+async function renderSourcesSection(container, siteId, onSourcesChanged) {
+  const s = section('Sources', []);
+  container.appendChild(s);
+  renderLoading(s);
+
+  let sourcesData;
+  try {
+    sourcesData = await api.get(`/sources?site_id=${encodeURIComponent(siteId)}&limit=200`);
+  } catch (err) {
+    // 取得失敗と0件を区別する: ここで失敗を確定させ、呼び出し元にも「取得失敗」であることを
+    // 伝播できるよう { failed: true } を返す (例外は投げない)。
+    clear(s);
+    s.appendChild(el('h3', { text: 'Sources' }));
+    appendError(s, err);
+    return { failed: true };
   }
 
-  const table = el('table');
-  table.appendChild(
-    el('thead', {}, [
-      el('tr', {}, [
-        el('th', { text: '種別' }),
-        el('th', { text: 'URL' }),
-        el('th', { text: '作成日時' }),
-        el('th', {}),
-      ]),
-    ])
-  );
-  const tbody = el('tbody');
-  for (const source of data.items) {
-    const deleteButton = el('button', {
-      class: 'button-danger',
-      text: '削除',
-      on: {
-        click: async () => {
-          if (!confirm(`Source "${source.url}" を削除します。関連する履歴も削除されます。よろしいですか?`)) return;
-          try {
-            await api.del(`/sources/${encodeURIComponent(source.id)}`);
-          } catch (err) {
-            alert(err.message);
-            return;
-          }
-          try {
-            await onSourcesChanged();
-          } catch (err) {
-            alert(`削除は成功しましたが、一覧の更新に失敗しました: ${err.message}`);
-          }
-        },
-      },
-    });
-    tbody.appendChild(
-      el('tr', {}, [
-        el('td', { text: source.type }),
-        el('td', { text: source.url }),
-        el('td', { text: formatDateTime(source.created_at) }),
-        el('td', {}, [deleteButton]),
-      ])
+  // Monitor一覧の取得失敗はSources自体の表示は妨げない (各カードの監視状態欄のみ「取得失敗」表示にする)。
+  let monitorsData = null;
+  let monitorsFetchFailed = false;
+  try {
+    monitorsData = await api.get(`/monitors?site_id=${encodeURIComponent(siteId)}&limit=200`);
+  } catch {
+    monitorsFetchFailed = true;
+  }
+
+  clear(s);
+  s.appendChild(el('h3', { text: 'Sources' }));
+
+  if (monitorsFetchFailed) {
+    s.appendChild(
+      el('p', { class: 'error', text: '監視状態の取得に失敗したため、各Sourceの監視状態は表示できません。' })
     );
   }
-  table.appendChild(tbody);
-  s.appendChild(table);
-  const notice = truncationNotice(data);
-  if (notice) s.appendChild(notice);
-  return { sources: data.items, failed: false };
+
+  const monitorsBySource = new Map();
+  if (monitorsData) {
+    for (const monitor of monitorsData.items) {
+      const list = monitorsBySource.get(monitor.source_id) ?? [];
+      list.push(monitor);
+      monitorsBySource.set(monitor.source_id, list);
+    }
+  }
+
+  if (sourcesData.items.length === 0) {
+    s.appendChild(el('p', { class: 'empty', text: 'Sourceがまだ登録されていません。' }));
+  } else {
+    for (const source of sourcesData.items) {
+      const monitorsForSource = monitorsBySource.get(source.id) ?? [];
+      s.appendChild(renderSourceCard(source, monitorsForSource, monitorsFetchFailed, onSourcesChanged));
+    }
+    const notice = truncationNotice(sourcesData);
+    if (notice) s.appendChild(notice);
+  }
+
+  s.appendChild(renderAddSourceForm(siteId, onSourcesChanged));
+
+  return { failed: false };
 }
 
 // --- Fetcher Policy ----------------------------------------------------------
@@ -519,7 +793,7 @@ async function renderRobotsOverridesSection(container, site) {
       judgmentEl.appendChild(
         el('p', {
           class: 'muted',
-          text: 'このoriginに対する robots評価はまだ記録されていません (Monitor実行後に確認できます)。',
+          text: 'このoriginに対する robots評価はまだ記録されていません (監視の実行後に確認できます)。',
         })
       );
       return;
@@ -606,109 +880,6 @@ async function renderRobotsOverridesSection(container, site) {
   }
 }
 
-// --- Monitors ----------------------------------------------------------------
-
-async function renderMonitorsSection(container, siteId, sources, sourcesFetchFailed = false) {
-  const s = section('Monitors', []);
-  container.appendChild(s);
-  renderLoading(s);
-
-  const data = await api.get(`/monitors?site_id=${encodeURIComponent(siteId)}&limit=200`);
-  clear(s);
-  s.appendChild(el('h3', { text: 'Monitors' }));
-
-  const sourceSelect = el(
-    'select',
-    {},
-    sources.map((src) => el('option', { attrs: { value: src.id }, text: `${src.type}: ${src.url}` }))
-  );
-  const intervalInput = el('input', { attrs: { type: 'number', min: 60, step: 1, required: true } });
-  intervalInput.value = '3600';
-  const errorEl = el('p', { class: 'error hidden' });
-
-  if (sourcesFetchFailed) {
-    // Sources取得の失敗と「Sourceが0件」を区別する: 前者はMonitor作成不可の理由が
-    // 取得失敗であることを明示し、後者 (0件) と異なる文言で案内する。
-    s.appendChild(
-      el('p', { class: 'error', text: 'Source一覧の取得に失敗しているため、Monitorを作成できません。ページを再読み込みしてください。' })
-    );
-  } else if (sources.length === 0) {
-    s.appendChild(el('p', { class: 'empty', text: 'Monitorを作成するには先にSourceを登録してください。' }));
-  } else {
-    const form = el('form', {
-      on: {
-        submit: async (event) => {
-          event.preventDefault();
-          errorEl.classList.add('hidden');
-          try {
-            await api.post('/monitors', {
-              source_id: sourceSelect.value,
-              interval_seconds: Number(intervalInput.value),
-            });
-          } catch (err) {
-            errorEl.textContent = `作成に失敗しました: ${err.message}`;
-            errorEl.classList.remove('hidden');
-            return;
-          }
-          container.removeChild(s);
-          try {
-            await renderMonitorsSection(container, siteId, sources, sourcesFetchFailed);
-          } catch (err) {
-            // 作成自体は成功しているため、再描画失敗は別メッセージで通知する。
-            const fallback = section('Monitors', []);
-            container.appendChild(fallback);
-            fallback.appendChild(el('p', { class: 'error', text: `作成は成功しましたが、一覧の更新に失敗しました: ${err.message}` }));
-          }
-        },
-      },
-    });
-    form.appendChild(fieldRow([field('Source', sourceSelect), field('実行間隔 (秒)', intervalInput)]));
-    form.appendChild(el('button', { attrs: { type: 'submit' }, text: 'Monitor作成' }));
-    form.appendChild(errorEl);
-    s.appendChild(form);
-  }
-
-  if (data.items.length === 0) {
-    s.appendChild(el('p', { class: 'empty', text: 'Monitorがまだ登録されていません。' }));
-    return;
-  }
-
-  const table = el('table');
-  table.appendChild(
-    el('thead', {}, [
-      el('tr', {}, [
-        el('th', { text: '状態' }),
-        el('th', { text: 'Source ID' }),
-        el('th', { text: '実行間隔(秒)' }),
-        el('th', { text: '次回実行' }),
-        el('th', {}),
-      ]),
-    ])
-  );
-  const tbody = el('tbody');
-  for (const monitor of data.items) {
-    tbody.appendChild(
-      el('tr', {}, [
-        el('td', {}, [badge(monitor.status)]),
-        el('td', { text: monitor.source_id }),
-        el('td', { text: String(monitor.interval_seconds) }),
-        el('td', { text: formatDateTime(monitor.next_run_at) }),
-        el('td', {}, [
-          el('button', {
-            class: 'button-ghost',
-            text: '詳細',
-            on: { click: () => navigate(`#/monitors/${encodeURIComponent(monitor.id)}`) },
-          }),
-        ]),
-      ])
-    );
-  }
-  table.appendChild(tbody);
-  s.appendChild(table);
-  const notice = truncationNotice(data);
-  if (notice) s.appendChild(notice);
-}
-
 // --- top-level view -----------------------------------------------------------
 
 async function siteDetailView(container, params) {
@@ -733,40 +904,28 @@ async function siteDetailView(container, params) {
   container.appendChild(section(null, [kv]));
 
   async function reloadAll() {
-    // Source作成後はSites詳細ページ全体を再レンダリングし、Monitor作成フォームの
-    // Source候補一覧などにも反映させる。
+    // Source作成後・監視の開始/削除後はSites詳細ページ全体を再レンダリングし、
+    // カード内の監視状態や他セクションにも反映させる。
     await siteDetailView(container, params);
   }
 
-  // Sources / Fetcher Policy / robots Override の取得は互いに独立しているため並列実行する
-  // (Monitorsのみ、Sources取得結果 (sources一覧・取得失敗フラグ) に依存するため後段で実行する)。
-  // 各セクション自身が自分の描画領域へエラーを出すため、ここでの失敗処理は従来どおり維持する。
+  // Sources (監視状態統合表示) / Fetcher Policy / robots Override の取得・描画は互いに独立
+  // しているため並列実行する。各セクション自身が自分の描画領域へエラーを出すため、
+  // ここでの失敗処理は従来どおり維持する。
   const [sourcesResult, fetcherResult, robotsResult] = await Promise.allSettled([
     renderSourcesSection(container, siteId, reloadAll),
     renderFetcherPolicySection(container, siteId),
     renderRobotsOverridesSection(container, site),
   ]);
 
-  let sources = [];
-  let sourcesFetchFailed = false;
-  if (sourcesResult.status === 'fulfilled') {
-    sources = sourcesResult.value.sources;
-    sourcesFetchFailed = sourcesResult.value.failed;
-  } else {
+  if (sourcesResult.status === 'rejected') {
     appendError(container, sourcesResult.reason);
-    sourcesFetchFailed = true;
   }
   if (fetcherResult.status === 'rejected') {
     appendError(container, fetcherResult.reason);
   }
   if (robotsResult.status === 'rejected') {
     appendError(container, robotsResult.reason);
-  }
-
-  try {
-    await renderMonitorsSection(container, siteId, sources, sourcesFetchFailed);
-  } catch (err) {
-    appendError(container, err);
   }
 
   renderSiteDangerZone(container, site);

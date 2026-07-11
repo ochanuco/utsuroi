@@ -1,5 +1,7 @@
 /**
- * #/monitors/:id : Monitor詳細
+ * #/monitors/:id : 監視詳細
+ *  - Site詳細のSourceカードから「履歴・差分」で遷移してくる詳細ページ
+ *    (どのSourceの監視かが一目で分かるよう、ヘッダにSource種別・URLを表示する)
  *  - DOステータス (status API 由来)
  *  - 手動実行・pause/resume
  *  - Policy Stop表示 (SPEC §9.1-7): status='blocked_by_robots' のときの停止理由・判定根拠
@@ -8,7 +10,19 @@
  */
 import { api } from '../api.js';
 import { registerRoute } from '../router.js';
-import { el, clear, section, formatDateTime, badge, renderLoading, renderError, appendError, navigate } from '../util.js';
+import {
+  el,
+  clear,
+  section,
+  formatDateTime,
+  monitorStatusBadge,
+  monitorStatusLabel,
+  intervalLabel,
+  renderLoading,
+  renderError,
+  appendError,
+  navigate,
+} from '../util.js';
 
 function renderPolicyStopBanner(container, monitor) {
   if (monitor.status !== 'blocked_by_robots') return;
@@ -54,8 +68,8 @@ async function renderStatusSection(container, monitorId, monitor, onChanged) {
 
   const dl = el('dl', { class: 'kv' });
   const rows = [
-    ['ステータス (DB)', monitor.status],
-    ['実行間隔 (秒)', String(monitor.interval_seconds)],
+    ['ステータス (DB)', monitorStatusLabel(monitor.status)],
+    ['実行間隔', intervalLabel(monitor.interval_seconds)],
     ['最終確認日時', formatDateTime(monitor.last_checked_at)],
   ];
   if (doStatus) {
@@ -93,7 +107,7 @@ async function renderStatusSection(container, monitorId, monitor, onChanged) {
   });
   const pauseButton = el('button', {
     class: 'button-ghost',
-    text: 'Pause',
+    text: '一時停止',
     on: {
       click: async () => {
         actionError.classList.add('hidden');
@@ -101,7 +115,7 @@ async function renderStatusSection(container, monitorId, monitor, onChanged) {
           await api.post(`/monitors/${encodeURIComponent(monitorId)}/pause`);
           await onChanged();
         } catch (err) {
-          actionError.textContent = `Pauseに失敗しました: ${err.message}`;
+          actionError.textContent = `一時停止に失敗しました: ${err.message}`;
           actionError.classList.remove('hidden');
         }
       },
@@ -109,7 +123,7 @@ async function renderStatusSection(container, monitorId, monitor, onChanged) {
   });
   const resumeButton = el('button', {
     class: 'button-ghost',
-    text: 'Resume',
+    text: '再開',
     on: {
       click: async () => {
         actionError.classList.add('hidden');
@@ -117,7 +131,7 @@ async function renderStatusSection(container, monitorId, monitor, onChanged) {
           await api.post(`/monitors/${encodeURIComponent(monitorId)}/resume`);
           await onChanged();
         } catch (err) {
-          actionError.textContent = `Resumeに失敗しました: ${err.message}`;
+          actionError.textContent = `再開に失敗しました: ${err.message}`;
           actionError.classList.remove('hidden');
         }
       },
@@ -282,10 +296,32 @@ async function monitorDetailView(container, params) {
     return;
   }
 
-  container.appendChild(el('h2', {}, [`Monitor: ${monitorId}`, ' ', badge(monitor.status)]));
+  // どのSourceの監視かをヘッダで一目で分かるようにする (Site詳細のカードから来た際の文脈維持)。
+  // Source取得に失敗しても監視詳細自体は表示を続行する (取得失敗時はURL等を省略する)。
+  let source = null;
+  try {
+    source = await api.get(`/sources/${encodeURIComponent(monitor.source_id)}`);
+  } catch {
+    source = null;
+  }
+
+  container.appendChild(el('h2', {}, ['監視詳細', ' ', monitorStatusBadge(monitor.status)]));
   container.appendChild(
     el('p', { class: 'breadcrumbs' }, [el('a', { attrs: { href: `#/sites/${encodeURIComponent(monitor.site_id)}` }, text: '← Site詳細へ' })])
   );
+
+  if (source) {
+    container.appendChild(
+      el('p', { class: 'source-card-header' }, [
+        el('span', { class: 'badge', text: source.type }),
+        el('span', { class: 'source-card-url', text: source.url }),
+      ])
+    );
+  } else {
+    container.appendChild(
+      el('p', { class: 'muted', text: `Source情報を取得できませんでした (Source ID: ${monitor.source_id})` })
+    );
+  }
 
   renderPolicyStopBanner(container, monitor);
 
@@ -314,18 +350,18 @@ async function monitorDetailView(container, params) {
   renderMonitorDangerZone(container, monitor);
 }
 
-// --- 危険操作 (Monitor削除) -----------------------------------------------------
+// --- 危険操作 (監視の削除) -------------------------------------------------------
 
 function renderMonitorDangerZone(container, monitor) {
   const s = section('危険操作', []);
   const errorEl = el('p', { class: 'error hidden' });
   const deleteButton = el('button', {
     class: 'button-danger',
-    text: 'このMonitorを削除',
+    text: 'この監視を削除',
     on: {
       click: async () => {
         errorEl.classList.add('hidden');
-        if (!confirm(`Monitor "${monitor.id}" を削除します。関連する履歴も削除されます。よろしいですか?`)) return;
+        if (!confirm(`この監視 (ID: ${monitor.id}) を削除します。関連する履歴も削除されます。よろしいですか?`)) return;
         try {
           await api.del(`/monitors/${encodeURIComponent(monitor.id)}`);
         } catch (err) {
