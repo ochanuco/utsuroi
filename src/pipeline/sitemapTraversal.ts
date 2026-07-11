@@ -11,21 +11,33 @@
  * ため、実URLの扱いはここで再実装しない。
  *
  * 歯止め (ADR-0010 §5, 「打ち切りは無言にせず記録する」):
- * - lastmod足切り (既定 DEFAULT_LASTMOD_MAX_AGE_DAYS 日): 対象外の実URL/子Sitemapは展開しない。
+ * - lastmod足切り (既定 DEFAULT_LASTMOD_MAX_AGE_DAYS 日): 対象外の実URL/子Sitemapは展開しない
+ *   (子Sitemapの足切りは traverseSitemapIndex 側で MAX_CHILD_SITEMAPS の枠取りより前に行う)。
  * - 子Sitemap数上限 (MAX_CHILD_SITEMAPS, feed.ts の既定値を再利用): 超過分は打ち切る。
+ *   cutoff適用後のエントリを lastmod 降順 (未知/nullは最後) にソートしてから枠を割り当てるため、
+ *   「安定して21件以上の子が並ぶ」サイトでも実際に変化した子が優先的に処理される
+ *   (CodeRabbit指摘: 文書順の先頭固定だと21件目以降が恒久除外されてしまう問題への対応)。
  * - 再帰深さ上限 (既定 DEFAULT_MAX_TRAVERSAL_DEPTH): 到達したら以降のネストは展開しない。
  * - origin境界: 親Siteのcanonical origin外の子Sitemapは展開しない。
  * - 実URL処理上限 (MAX_FEED_ITEMS_PER_CHECK, processFeedItems 側): 超過分は次回以降の
  *   チェックに持ち越す (この場合、超過を起こした子の watermark は進めない。下記コメント参照)。
+ * - フェッチ予算上限 (MAX_TRAVERSAL_FETCHES_PER_CHECK, ADR-0010 §5 最終防波堤): 深さ上限・
+ *   子数上限は「1階層あたり」の上限に過ぎず、再帰全体で見ると最悪ケース (子数上限 × 深さ段数) の
+ *   HTTP subrequestバーストになりうる。チェック全体で共有する子Sitemapフェッチ回数の総量に
+ *   上限を設け、超過分はフェッチせず次回以降に持ち越す。
  *
  * これらのうち実際に「作業を打ち切った」もの (childrenTruncated / depthTruncated /
- * feedItemsTruncated) はチェック終了時に console.warn + audit_events
+ * feedItemsTruncated / fetchBudgetTruncated) はチェック終了時に console.warn + audit_events
  * (action: 'monitor.traversal_truncated') へまとめて1件記録する (無言で落とさない)。
  * originBlocked / missingLastmodSkipped は境界外/足切り対象の通常スキップであり定常的に
  * 発生しうるため、console.warn のみ (audit行の記録条件は recordTruncationIfAny 参照)。
  *
  * 実URLの updatedAt (lastmod) が無いエントリは、足切りの基準にできないため traverse モードでは
  * 常にスキップする (ADR-0010 「モードBはlastmodを信頼できるサイト向け」という前提そのもの)。
+ *
+ * ネストした子sitemap-index (中間ノード) の watermark 前進についても、自分自身の展開だけでなく
+ * 再帰先 (孫以下) で何らかの打ち切りが発生していないかを見てから判断する
+ * (traverseChild 内の「再帰後の打ち切り総数チェック」コメント参照)。
  */
 import { parseSource } from '../adapters';
 import { AdapterParseError } from '../adapters/errors';
@@ -54,10 +66,21 @@ import type { CheckContext } from './types';
 export const DEFAULT_LASTMOD_MAX_AGE_DAYS = 3;
 /** sitemap-index 再帰展開の既定深さ上限 (ADR-0010 §5) */
 export const DEFAULT_MAX_TRAVERSAL_DEPTH = 3;
+/**
+ * 1回のチェックあたりで子Sitemapを実際にフェッチしてよい回数の上限 (ADR-0010 §5 最終防波堤)。
+ * MAX_CHILD_SITEMAPS (1階層あたり) と DEFAULT_MAX_TRAVERSAL_DEPTH (深さ) はそれぞれ独立した
+ * 上限であり、組み合わせると再帰全体で最悪 20^depth 規模のフェッチが起こりうる。この定数は
+ * チェック全体を通じて共有する「実フェッチ回数」の総量に上限をかけ、超過分は今回フェッチせず
+ * 次回以降のチェックに持ち越す (watermark を進めない、traverseChild 内コメント参照)。
+ */
+export const MAX_TRAVERSAL_FETCHES_PER_CHECK = 50;
 
-/** チェック全体で集計する打ち切り・スキップ件数 (ADR-0010 §5「打ち切りは無言にせず記録する」) */
+/**
+ * チェック全体で共有する打ち切り件数 + 状態 (ADR-0010 §5「打ち切りは無言にせず記録する」)。
+ * fetchesUsed は「打ち切り件数」ではなく、フェッチ予算の消費量を再帰全体で共有するための状態。
+ */
 interface TraversalCounts {
-  /** MAX_CHILD_SITEMAPS 超過で展開しなかった子Sitemap数 (sitemap-indexごとの合算) */
+  /** MAX_CHILD_SITEMAPS 超過で展開しなかった子Sitemap数 (cutoff適用後の件数で判定、合算) */
   childrenTruncated: number;
   /** 再帰深さ上限に達し展開しなかった子 sitemap-index 数 */
   depthTruncated: number;
@@ -67,6 +90,10 @@ interface TraversalCounts {
   missingLastmodSkipped: number;
   /** processFeedItems 側 (MAX_FEED_ITEMS_PER_CHECK) で打ち切られ、次回以降に持ち越された実URL数 */
   feedItemsTruncated: number;
+  /** MAX_TRAVERSAL_FETCHES_PER_CHECK 超過で今回フェッチしなかった子Sitemap数 (次回持ち越し) */
+  fetchBudgetTruncated: number;
+  /** チェック全体で実行した子Sitemapフェッチ回数 (フェッチ予算の消費量) */
+  fetchesUsed: number;
 }
 
 function newCounts(): TraversalCounts {
@@ -76,7 +103,14 @@ function newCounts(): TraversalCounts {
     originBlocked: 0,
     missingLastmodSkipped: 0,
     feedItemsTruncated: 0,
+    fetchBudgetTruncated: 0,
+    fetchesUsed: 0,
   };
+}
+
+/** 「実際の作業打ち切り」の合計 (originBlocked/missingLastmodSkippedは通常のフィルタなので含めない) */
+function truncationTotal(counts: TraversalCounts): number {
+  return counts.childrenTruncated + counts.depthTruncated + counts.feedItemsTruncated + counts.fetchBudgetTruncated;
 }
 
 /**
@@ -97,6 +131,30 @@ function filterItemsForTraversal(items: FeedItem[], cutoffIso: string, counts: T
   return kept;
 }
 
+interface ChildEntry {
+  loc: string;
+  lastmod: string | null;
+}
+
+/**
+ * sitemap-index 配下の子Sitemapエントリを cutoff でフィルタし、lastmod 降順 (null は最後) に
+ * ソートする。cutoff外の古い子は「打ち切り」ではなく通常のフィルタ (originBlocked /
+ * missingLastmodSkipped と同種の定常スキップ) として除外するため、ここでは counts への
+ * カウントは行わない (audit スパム防止の一貫性、レビュー指摘)。
+ * ソートにより、MAX_CHILD_SITEMAPS の枠を「文書順の先頭」ではなく「実際に最近変化した子」が
+ * 優先的に得られるようにする (安定して21件以上の子が並ぶサイトでの恒久除外を防ぐ)。
+ * Array#sort は安定ソートなので、lastmod が同値の場合は文書順を維持する。
+ */
+function selectChildEntries(entries: ChildEntry[], cutoffIso: string): ChildEntry[] {
+  const eligible = entries.filter((e) => e.lastmod === null || e.lastmod >= cutoffIso);
+  return [...eligible].sort((a, b) => {
+    if (a.lastmod === b.lastmod) return 0;
+    if (a.lastmod === null) return 1; // null (lastmod不明) は最後
+    if (b.lastmod === null) return -1;
+    return a.lastmod < b.lastmod ? 1 : -1; // 降順 (新しい方を優先)
+  });
+}
+
 /**
  * 親Siteのcanonical origin (site.primaryOrigin) と一致するかどうかを判定する。
  * primaryOrigin が未設定、または childUrl が不正なURLの場合は安全側 (境界内とはみなさない) に倒す。
@@ -113,12 +171,14 @@ function isWithinSiteOrigin(childUrl: string, primaryOrigin: string | null): boo
 /**
  * sitemap-index の子1件を評価・条件付き展開する。
  *
- * 呼び出し順序 (ADR-0010 §5, §3 に対応):
- * 1. origin境界 → 2. lastmod足切り → 3. Target upsert (watermark取得は upsert 前) →
- * 4. baseline (フェッチ・展開しない) → 5. watermark比較でのゲート →
- * 6. SSRF/robots (HostObject 追加leaseは取らない、feed.ts の既存設計判断を踏襲) →
+ * 呼び出し順序 (ADR-0010 §5, §3 に対応。lastmod cutoff は呼び出し元 traverseSitemapIndex 側で
+ * 既に適用済みなのでここでは判定しない):
+ * 1. origin境界 → 2. Target upsert (watermark取得は upsert 前) → 3. baseline (フェッチ・展開しない) →
+ * 4. watermark比較でのゲート → 5. SSRF/robots (HostObject 追加leaseは取らない、feed.ts の
+ * 既存設計判断を踏襲) → 6. フェッチ予算チェック (MAX_TRAVERSAL_FETCHES_PER_CHECK) →
  * 7. 条件付きフェッチ → 8. urlset なら processFeedItems、sitemap-index なら再帰 →
- * 9. 展開が正常完了した後にのみ watermark を前進 (at-least-once 復旧のため、feed.ts と同じ理由)。
+ * 9. 展開が正常完了した後にのみ watermark を前進 (at-least-once 復旧のため、feed.ts と同じ理由。
+ * 加えて再帰先で打ち切りが起きていないことも条件にする、9.の直前コメント参照)。
  */
 async function traverseChild(
   ctx: CheckContext,
@@ -128,6 +188,7 @@ async function traverseChild(
   cutoffIso: string,
   maxDepth: number,
   counts: TraversalCounts,
+  maxFetchesPerCheck: number,
 ): Promise<void> {
   // 1. origin境界 (ADR-0010 §5「親Siteのcanonical origin内に限定する」)。
   if (!isWithinSiteOrigin(childUrl, ctx.site.primaryOrigin)) {
@@ -135,11 +196,7 @@ async function traverseChild(
     return;
   }
 
-  // 2. lastmod足切り。lastmod が無い子はここでは弾かない (ゲート不能なので毎回条件付きフェッチする、
-  // ADR-0010 §2 モードB「lastmodが無い場合は…」の裏側)。
-  if (childLastmod !== null && childLastmod < cutoffIso) return;
-
-  // 3. watermark はこの Target を upsert する前の値を見る (isNew 判定・ゲート判定の両方に使う)。
+  // 2. watermark はこの Target を upsert する前の値を見る (isNew 判定・ゲート判定の両方に使う)。
   const previous = await getExistingTargetWatermark(ctx.db, ctx.monitor.id, childUrl);
   const isNewChild = !previous.exists;
   const childTarget = await upsertTarget(ctx.db, {
@@ -150,21 +207,21 @@ async function traverseChild(
     lastKnownUpdatedAt: isNewChild ? childLastmod : undefined,
   });
 
-  // 4. baseline: 子Targetの登録とwatermark初期化のみ行い、フェッチも展開もしない
+  // 3. baseline: 子Targetの登録とwatermark初期化のみ行い、フェッチも展開もしない
   // (ADR-0010 §3「初回に子Sitemapのlastmodを記録し、実URLを一括展開しない」)。
   if (ctx.monitor.lastCheckedAt === null) {
     await setTargetLastChecked(ctx.db, childTarget.id, new Date(ctx.now()).toISOString());
     return;
   }
 
-  // 5. watermarkゲート: 既存Targetで、かつ子のlastmodが前回と同一ならフェッチせずスキップする
+  // 4. watermarkゲート: 既存Targetで、かつ子のlastmodが前回と同一ならフェッチせずスキップする
   // (lastmodが無い子や新規に見つかった子はゲートできないため、常にこの先へ進み条件付きフェッチする)。
   if (!isNewChild && childLastmod !== null && previous.lastKnownUpdatedAt === childLastmod) {
     await setTargetLastChecked(ctx.db, childTarget.id, new Date(ctx.now()).toISOString());
     return;
   }
 
-  // 6. SSRF (静的+動的) / robots 評価 (feed.ts の旧 processSitemapIndexChildren と同じ判断:
+  // 5. SSRF (静的+動的) / robots 評価 (feed.ts の旧 processSitemapIndexChildren と同じ判断:
   // 子Sitemapの取得には追加の HostObject lease を取らない。親Source取得で確保した枠内とみなす簡略化、
   // ADR-0005 Guardrail「同一originは取得間で追加leaseは不要とする」に基づく)。
   const staticCheck = checkUrlForSsrf(childUrl);
@@ -186,6 +243,17 @@ async function traverseChild(
     now: ctx.now,
   });
   if (decision.verdict === 'disallowed' && robotsMode === 'enforce') return;
+
+  // 6. フェッチ予算 (MAX_TRAVERSAL_FETCHES_PER_CHECK, ADR-0010 §5 最終防波堤)。
+  // 予算を使い切っている場合はフェッチせずスキップする (watermark も進めない = 次回持ち越し。
+  // feedItemsTruncated と同じ理由: ここで watermark を進めてしまうと、次回チェック時に
+  // 子のlastmodが今回観測した値と一致してゲートされ、持ち越し分がlastmodが次に変わるまで
+  // 永久に処理されなくなる)。
+  if (counts.fetchesUsed >= maxFetchesPerCheck) {
+    counts.fetchBudgetTruncated += 1;
+    return;
+  }
+  counts.fetchesUsed += 1;
 
   // 7. 条件付きフェッチ (etag/lastModified は既存Snapshotから)。
   const latest = await getLatestSnapshotForTarget(ctx.db, childTarget.id);
@@ -228,7 +296,7 @@ async function traverseChild(
         // MAX_FEED_ITEMS_PER_CHECK 超過分は今回処理されず次回以降のチェックに持ち越される
         // (ADR-0010 §5「超過分は…次回以降のチェックに持ち越す」)。ここで watermark を進めて
         // しまうと、次回チェック時に子のlastmodが (今回観測した値と) 一致してしまい
-        // watermarkゲート (5.) でフェッチ自体がスキップされ、持ち越し分が子のlastmodが
+        // watermarkゲート (4.) でフェッチ自体がスキップされ、持ち越し分が子のlastmodが
         // 次に変わるまで永久に処理されなくなる。そのため展開が「不完全」だったこの回は
         // watermark を進めずに return し、次回また同じ子を再展開させる (先頭側は dedupeKey
         // で no-op になるだけなので実害はなく、残余分だけが新たに処理される)。
@@ -237,8 +305,20 @@ async function traverseChild(
       }
     }
   } else {
+    // 再帰 (孫以下) に入る前の打ち切り総数をスナップショットしておく。再帰から戻った後に
+    // 総数が増えていれば、孫以下のどこかで (子数上限 / 深さ上限 / 実URL処理上限 / フェッチ予算の
+    // いずれであれ) 展開が「不完全」に終わったということなので、この中間ノード (子sitemap-index)
+    // 自身の watermark も前進させない。これを怠ると、孫で打ち切りが起きた回だけこの中間ノードの
+    // watermark が先に進んでしまい、次回チェックで watermarkゲート (4.) に阻まれて中間ノードの
+    // 再フェッチ自体が起こらなくなり、孫の持ち越し分がこの中間ノードのlastmodが次に変わるまで
+    // 恒久的に再展開されなくなる (feedItemsTruncatedで修正したのと同じ故障モードが、再帰の
+    // 1つ上の階層でも起こりうる。CodeRabbitの提案は childrenTruncated + depthTruncated のみ
+    // だったが、feedItemsTruncated / fetchBudgetTruncated も同じ理由で中間ノードを恒久ゲート
+    // させうるため、4種類すべての打ち切りカウンタの合計で判定する)。
     if (depth + 1 < maxDepth) {
-      await traverseSitemapIndex(ctx, parsed, depth + 1, cutoffIso, maxDepth, counts);
+      const truncatedBefore = truncationTotal(counts);
+      await traverseSitemapIndex(ctx, parsed, depth + 1, cutoffIso, maxDepth, counts, maxFetchesPerCheck);
+      if (truncationTotal(counts) > truncatedBefore) return;
     } else {
       // 深さ上限到達: これ以上のネストは展開しない (打ち切りとして記録する)。
       counts.depthTruncated += 1;
@@ -257,6 +337,8 @@ async function traverseChild(
 /**
  * sitemap-index 1件分の子Sitemap一覧を評価・展開する (再帰可能)。
  * depth はこの sitemap-index 自体のネスト深さ (ルート = 0)。
+ * maxFetchesPerCheck はテスト用の注入ポイント (processFeedItems の maxItems と同じパターン)。
+ * 省略時は既定の MAX_TRAVERSAL_FETCHES_PER_CHECK を使う。
  */
 export async function traverseSitemapIndex(
   ctx: CheckContext,
@@ -265,21 +347,26 @@ export async function traverseSitemapIndex(
   cutoffIso: string,
   maxDepth: number,
   counts: TraversalCounts,
+  maxFetchesPerCheck: number = MAX_TRAVERSAL_FETCHES_PER_CHECK,
 ): Promise<void> {
   // sitemap-index の parsed.items は buildSitemapIndexResult (src/adapters/sitemap.ts) が
   // 子Sitemapごとに stableKey=loc=url・updatedAt=lastmod として詰めたものなので、
   // childSitemaps とのインデックス対応を仮定せず items から直接 { loc, lastmod } を導出する。
-  const childEntries = parsed.items
+  const childEntries: ChildEntry[] = parsed.items
     .filter((item): item is typeof item & { url: string } => item.url !== null)
     .map((item) => ({ loc: item.url, lastmod: item.updatedAt }));
 
-  const toProcess = childEntries.slice(0, MAX_CHILD_SITEMAPS);
-  if (childEntries.length > MAX_CHILD_SITEMAPS) {
-    counts.childrenTruncated += childEntries.length - MAX_CHILD_SITEMAPS;
+  // cutoff適用 (古い子は通常のフィルタとして除外、カウント対象外) + lastmod降順ソート後に
+  // MAX_CHILD_SITEMAPS の枠を割り当てる。childrenTruncated は「フィルタ後」の超過分だけ数える
+  // (cutoff外の子を除外したこと自体は打ち切りではないため、audit スパム防止の一貫性)。
+  const selected = selectChildEntries(childEntries, cutoffIso);
+  const toProcess = selected.slice(0, MAX_CHILD_SITEMAPS);
+  if (selected.length > MAX_CHILD_SITEMAPS) {
+    counts.childrenTruncated += selected.length - MAX_CHILD_SITEMAPS;
   }
 
   for (const { loc, lastmod } of toProcess) {
-    await traverseChild(ctx, loc, lastmod, depth, cutoffIso, maxDepth, counts);
+    await traverseChild(ctx, loc, lastmod, depth, cutoffIso, maxDepth, counts, maxFetchesPerCheck);
   }
 }
 
@@ -287,24 +374,31 @@ export async function traverseSitemapIndex(
  * 打ち切り・スキップの件数を console.warn / audit_events へ記録する。
  *
  * 発火条件を2段階に分ける (レビュー指摘対応):
- * - console.warn: 5カウントのいずれか1つでも正なら出す (運用ログとしては originBlocked /
+ * - console.warn: 6カウントのいずれか1つでも正なら出す (運用ログとしては originBlocked /
  *   missingLastmodSkipped も見えていてほしいため)。
  * - audit_events (action: 'monitor.traversal_truncated'): 「実際に作業を打ち切った」
- *   (childrenTruncated + depthTruncated + feedItemsTruncated > 0) 場合のみ記録する。
- *   originBlocked (越境の子を毎回除外する) と missingLastmodSkipped (lastmod無しの実URLを
- *   毎回除外する) は、対象のSitemap構成次第では*毎チェック定常的に*発生しうる正常なフィルタ
- *   動作であり、ADR-0010 §5が指す「打ち切り」(本来処理すべきだった対象を上限のせいで諦めた)
- *   とは性質が異なる。これを audit 発火条件に含めると、そのようなSourceでは毎チェック
- *   audit_events に1行ずつ積み上がり続けてしまう (スパム化・監査ログとしての意味が薄れる)。
+ *   (childrenTruncated + depthTruncated + feedItemsTruncated + fetchBudgetTruncated > 0,
+ *   truncationTotal() 参照) 場合のみ記録する。originBlocked (越境の子を毎回除外する) と
+ *   missingLastmodSkipped (lastmod無しの実URLを毎回除外する) は、対象のSitemap構成次第では
+ *   *毎チェック定常的に*発生しうる正常なフィルタ動作であり、ADR-0010 §5が指す「打ち切り」
+ *   (本来処理すべきだった対象を上限のせいで諦めた) とは性質が異なる。これを audit 発火条件に
+ *   含めると、そのようなSourceでは毎チェック audit_events に1行ずつ積み上がり続けてしまう
+ *   (スパム化・監査ログとしての意味が薄れる)。
  */
 async function recordTruncationIfAny(
   ctx: CheckContext,
   counts: TraversalCounts,
-  limits: { lastmodMaxAgeDays: number; maxDepth: number },
+  limits: { lastmodMaxAgeDays: number; maxDepth: number; maxFetchesPerCheck: number },
 ): Promise<void> {
-  const { childrenTruncated, depthTruncated, originBlocked, missingLastmodSkipped, feedItemsTruncated } = counts;
+  const { childrenTruncated, depthTruncated, originBlocked, missingLastmodSkipped, feedItemsTruncated, fetchBudgetTruncated } =
+    counts;
   const anyCount =
-    childrenTruncated > 0 || depthTruncated > 0 || originBlocked > 0 || missingLastmodSkipped > 0 || feedItemsTruncated > 0;
+    childrenTruncated > 0 ||
+    depthTruncated > 0 ||
+    originBlocked > 0 ||
+    missingLastmodSkipped > 0 ||
+    feedItemsTruncated > 0 ||
+    fetchBudgetTruncated > 0;
   if (!anyCount) return;
 
   const payload = {
@@ -313,16 +407,17 @@ async function recordTruncationIfAny(
     originBlocked,
     missingLastmodSkipped,
     feedItemsTruncated,
+    fetchBudgetTruncated,
     maxChildSitemaps: MAX_CHILD_SITEMAPS,
     maxDepth: limits.maxDepth,
     lastmodMaxAgeDays: limits.lastmodMaxAgeDays,
+    maxTraversalFetchesPerCheck: limits.maxFetchesPerCheck,
   };
   console.warn(
     `[sitemapTraversal] monitor=${ctx.monitor.id} truncated during traversal: ${JSON.stringify(payload)}`,
   );
 
-  const didTruncateWork = childrenTruncated > 0 || depthTruncated > 0 || feedItemsTruncated > 0;
-  if (!didTruncateWork) return;
+  if (truncationTotal(counts) === 0) return;
 
   await recordAuditEvent(ctx.db, {
     actor: 'system',
@@ -335,6 +430,7 @@ async function recordTruncationIfAny(
 /**
  * sitemap / sitemap-index Source の Source URL 本体取得後の処理 (Sitemap 探索, ADR-0010 Phase B)。
  * processFeedContent と同じ形状のエントリポイント (ctx, target, checkAttemptId, outcome, body)。
+ * maxFetchesPerCheck はテスト用の注入ポイント (省略時は既定の MAX_TRAVERSAL_FETCHES_PER_CHECK)。
  */
 export async function processSitemapTraversal(
   ctx: CheckContext,
@@ -342,6 +438,7 @@ export async function processSitemapTraversal(
   checkAttemptId: string | null,
   outcome: FetchSuccess,
   body: Uint8Array,
+  maxFetchesPerCheck: number = MAX_TRAVERSAL_FETCHES_PER_CHECK,
 ): Promise<void> {
   const rawHash = await sha256Hex(body);
   await putIfAbsent(ctx.env.BODIES, bodyKey(rawHash), body);
@@ -387,8 +484,8 @@ export async function processSitemapTraversal(
       counts.feedItemsTruncated += truncatedCount;
     }
   } else {
-    await traverseSitemapIndex(ctx, parsed, 0, cutoffIso, maxDepth, counts);
+    await traverseSitemapIndex(ctx, parsed, 0, cutoffIso, maxDepth, counts, maxFetchesPerCheck);
   }
 
-  await recordTruncationIfAny(ctx, counts, { lastmodMaxAgeDays, maxDepth });
+  await recordTruncationIfAny(ctx, counts, { lastmodMaxAgeDays, maxDepth, maxFetchesPerCheck });
 }

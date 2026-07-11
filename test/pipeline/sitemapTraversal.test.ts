@@ -6,8 +6,13 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { runMonitorCheck } from '../../src/pipeline/runCheck';
+import { traverseSitemapIndex } from '../../src/pipeline/sitemapTraversal';
+import type { CheckContext } from '../../src/pipeline/types';
 import type { Env } from '../../src/shared/env';
+import type { AdapterParseResult, FetcherPolicy } from '../../src/shared/contracts';
 import {
+  createCheckJobIfNew,
+  getFetcherPolicy,
   listAuditEventsBySubject,
   listChangesByMonitor,
   listDeliveriesByChange,
@@ -616,5 +621,271 @@ describe('runMonitorCheck: sitemap-index with an explicit direct config still us
     const targets = await listTargetsByMonitor(db(), monitor.id);
     expect(targets).toHaveLength(1);
     expect(targets[0]?.url).toBe('https://example.com/explicit-direct.xml');
+  });
+});
+
+// CodeRabbit レビュー指摘 (PR #10) への対応: 子選択の cutoff 前倒し + lastmod 降順優先。
+describe('runMonitorCheck: Sitemap Traversal MAX_CHILD_SITEMAPS selection is lastmod-priority, not document-order', () => {
+  it('drops the single oldest child when 21 children are all within cutoff, and records childrenTruncated in the audit event', async () => {
+    const { monitor } = await buildPipelineFixture({
+      sourceType: 'sitemap-index',
+      sourceUrl: 'https://example.com/traverse-root-priority.xml',
+      sourceConfig: { sitemapMode: 'traverse' },
+    });
+    // 21件、いずれも cutoff 内だが lastmod が1分刻みで異なる (安定して21件以上並ぶ状況を再現)。
+    const baseTimeMs = new Date(WITHIN_CUTOFF_A).getTime();
+    const children = Array.from({ length: 21 }, (_, i) => ({
+      loc: `https://example.com/priority-child-${i}.xml`,
+      lastmod: new Date(baseTimeMs + i * 60_000).toISOString(),
+    }));
+    const oldestChildUrl = children[0]!.loc; // lastmod が最も古い (=最初に切り捨てられるべき) 子
+
+    await runMonitorCheck(
+      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      monitor.id,
+      {
+        fetch: routedFetch({
+          [ROBOTS_ALLOW[0]]: ROBOTS_ALLOW[1],
+          'https://example.com/traverse-root-priority.xml': () =>
+            new Response(sitemapIndexBody(children), { status: 200, headers: { 'content-type': 'application/xml' } }),
+        }),
+        hostLimiter: grantingLimiter(),
+        now: NOW,
+      },
+    );
+
+    const targets = await listTargetsByMonitor(db(), monitor.id);
+    // Source自体 (1) + 20件の子 (最古の1件は MAX_CHILD_SITEMAPS の枠から漏れる)。
+    expect(targets).toHaveLength(21);
+    expect(targets.some((t) => t.url === oldestChildUrl)).toBe(false);
+    // 残り20件はすべて登録されている (念のため一部を確認)。
+    expect(targets.some((t) => t.url === children[20]!.loc)).toBe(true);
+
+    const events = await listAuditEventsBySubject(db(), monitor.id);
+    const truncationEvent = events.find((e) => e.action === 'monitor.traversal_truncated');
+    expect(truncationEvent).toBeTruthy();
+    expect((truncationEvent?.payload as { childrenTruncated: number }).childrenTruncated).toBe(1);
+  });
+});
+
+describe('runMonitorCheck: Sitemap Traversal nested truncation blocks the intermediate node watermark (batch1 regression)', () => {
+  it('does not advance the watermark of an intermediate child sitemap-index when its own children get truncated, so it is re-fetched next check', async () => {
+    const { monitor } = await buildPipelineFixture({
+      sourceType: 'sitemap-index',
+      sourceUrl: 'https://example.com/nest-trunc-root.xml',
+      sourceConfig: { sitemapMode: 'traverse' },
+    });
+    // C1 (中間ノード) 自身は21件の孫Sitemapを持つ -> 孫レベルで childrenTruncated が発生する。
+    const grandchildren = Array.from({ length: 21 }, (_, i) => ({
+      loc: `https://example.com/nest-trunc-grandchild-${i}.xml`,
+      lastmod: WITHIN_CUTOFF_A,
+    }));
+    const rootBody = (c1Lastmod: string) =>
+      sitemapIndexBody([{ loc: 'https://example.com/nest-trunc-c1.xml', lastmod: c1Lastmod }]);
+
+    // run1: baseline. C1 registered (watermark = A), not fetched.
+    await runMonitorCheck(
+      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      monitor.id,
+      {
+        fetch: routedFetch({
+          [ROBOTS_ALLOW[0]]: ROBOTS_ALLOW[1],
+          'https://example.com/nest-trunc-root.xml': () =>
+            new Response(rootBody(WITHIN_CUTOFF_A), { status: 200, headers: { 'content-type': 'application/xml' } }),
+        }),
+        hostLimiter: grantingLimiter(),
+        now: NOW,
+      },
+    );
+
+    // run2: C1's lastmod changes (A -> B) -> C1 fetched -> its 21 grandchildren trigger
+    // childrenTruncated=1 at the grandchild level (21 > MAX_CHILD_SITEMAPS=20). Since this
+    // truncation happened while expanding C1's own children, C1's watermark must NOT advance
+    // (batch1 fix: propagation via truncationTotal(), not just childrenTruncated+depthTruncated).
+    // Any grandchild fetch attempt without an explicit stub falls back to routedFetch's 404,
+    // which traverseChild handles gracefully (outcome.ok === false -> skip, no crash).
+    await runMonitorCheck(
+      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      monitor.id,
+      {
+        fetch: routedFetch({
+          [ROBOTS_ALLOW[0]]: ROBOTS_ALLOW[1],
+          'https://example.com/nest-trunc-root.xml': () =>
+            new Response(rootBody(WITHIN_CUTOFF_B), { status: 200, headers: { 'content-type': 'application/xml' } }),
+          'https://example.com/nest-trunc-c1.xml': () =>
+            new Response(sitemapIndexBody(grandchildren), {
+              status: 200,
+              headers: { 'content-type': 'application/xml' },
+            }),
+        }),
+        hostLimiter: grantingLimiter(),
+        now: NOW,
+      },
+    );
+
+    const targetsAfterRun2 = await listTargetsByMonitor(db(), monitor.id);
+    const c1AfterRun2 = targetsAfterRun2.find((t) => t.url === 'https://example.com/nest-trunc-c1.xml');
+    // 核心: C1 は正常にフェッチ・パースできたが、孫レベルで打ち切りが起きたため watermark は
+    // 前進していない (A のまま)。
+    expect(c1AfterRun2?.lastKnownUpdatedAt).toBe(WITHIN_CUTOFF_A);
+
+    const events = await listAuditEventsBySubject(db(), monitor.id);
+    const truncationEvent = events.find((e) => e.action === 'monitor.traversal_truncated');
+    expect(truncationEvent).toBeTruthy();
+    expect((truncationEvent?.payload as { childrenTruncated: number }).childrenTruncated).toBe(1);
+
+    // run3: root がC1のlastmodをBのまま (run2から変化なし) で報告しても、C1のwatermarkがまだA
+    // (run2で進まなかった) のままなので A !== B でゲートされず、C1が再度フェッチされる
+    // (孫の持ち越し分の処理機会が失われない = ADR-0010 §5「持ち越す」が守られる)。
+    const { fetch: run3Fetch, calls: run3Calls } = trackingFetch(
+      routedFetch({
+        [ROBOTS_ALLOW[0]]: ROBOTS_ALLOW[1],
+        'https://example.com/nest-trunc-root.xml': () =>
+          new Response(rootBody(WITHIN_CUTOFF_B), { status: 200, headers: { 'content-type': 'application/xml' } }),
+        'https://example.com/nest-trunc-c1.xml': () =>
+          new Response(sitemapIndexBody(grandchildren), {
+            status: 200,
+            headers: { 'content-type': 'application/xml' },
+          }),
+      }),
+    );
+    await runMonitorCheck(
+      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      monitor.id,
+      { fetch: run3Fetch, hostLimiter: grantingLimiter(), now: NOW },
+    );
+    expect(run3Calls.some((u) => u.includes('nest-trunc-c1.xml'))).toBe(true);
+  });
+});
+
+describe('runMonitorCheck: Sitemap Traversal fetch budget (MAX_TRAVERSAL_FETCHES_PER_CHECK)', () => {
+  it('stops fetching children once the injected fetch budget is exhausted, prioritized by lastmod, and does not advance the watermark of the budget-blocked child', async () => {
+    const { monitor, site, source } = await buildPipelineFixture({
+      sourceType: 'sitemap-index',
+      sourceUrl: 'https://example.com/fetch-budget-root.xml',
+      sourceConfig: { sitemapMode: 'traverse' },
+    });
+    const maybePolicy = await getFetcherPolicy(db(), site.id);
+    if (!maybePolicy) throw new Error('test setup: expected a fetcher policy to exist');
+    const fetcherPolicy: FetcherPolicy = maybePolicy;
+
+    const children = [
+      { loc: 'https://example.com/budget-child-1.xml', oldLastmod: WITHIN_CUTOFF_A, newLastmod: WITHIN_CUTOFF_B },
+      { loc: 'https://example.com/budget-child-2.xml', oldLastmod: WITHIN_CUTOFF_A, newLastmod: WITHIN_CUTOFF_C },
+      {
+        loc: 'https://example.com/budget-child-3.xml',
+        oldLastmod: WITHIN_CUTOFF_A,
+        newLastmod: '2026-07-10T18:00:00.000Z',
+      },
+    ];
+
+    function buildParsedIndex(useNewLastmod: boolean): AdapterParseResult {
+      return {
+        kind: 'sitemap-index',
+        items: children.map((c) => ({
+          stableKey: c.loc,
+          url: c.loc,
+          title: null,
+          publishedAt: null,
+          updatedAt: useNewLastmod ? c.newLastmod : c.oldLastmod,
+          summary: null,
+        })),
+        childSitemaps: children.map((c) => c.loc),
+        meta: { title: null },
+      };
+    }
+
+    const cutoffIso = new Date(NOW().getTime() - 3 * 86_400_000).toISOString();
+
+    // check_attempts.check_job_id has a real FK to check_jobs(id) (migrations/0001_init.sql),
+    // so traverseChild's fetchTargetThroughPolicy -> createCheckAttempt needs an actual row here
+    // (unlike ctx.job in feed.test.ts's processFeedItems-only test, which never touches check_attempts).
+    const { row: job } = await createCheckJobIfNew(db(), {
+      monitorId: monitor.id,
+      scheduledFor: NOW().toISOString(),
+      trigger: 'manual',
+    });
+
+    function buildCtx(fetchImpl: typeof fetch, lastCheckedAt: string | null): CheckContext {
+      return {
+        env: fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+        db: db(),
+        monitor: { ...monitor, lastCheckedAt },
+        source,
+        site,
+        policy: fetcherPolicy,
+        job,
+        fetchImpl,
+        now: () => NOW().getTime(),
+        changeIds: [],
+      };
+    }
+
+    // run1 (baseline): register the 3 children with their old watermark, no fetch attempted.
+    const counts1 = {
+      childrenTruncated: 0,
+      depthTruncated: 0,
+      originBlocked: 0,
+      missingLastmodSkipped: 0,
+      feedItemsTruncated: 0,
+      fetchBudgetTruncated: 0,
+      fetchesUsed: 0,
+    };
+    await traverseSitemapIndex(
+      buildCtx(routedFetch({ [ROBOTS_ALLOW[0]]: ROBOTS_ALLOW[1] }), null),
+      buildParsedIndex(false),
+      0,
+      cutoffIso,
+      3,
+      counts1,
+    );
+
+    // run2 (non-baseline, injected maxFetchesPerCheck=2): all 3 children changed lastmod (so
+    // none are watermark-gated), but only 2 may actually be fetched this check.
+    const stub = routedFetch({
+      [ROBOTS_ALLOW[0]]: ROBOTS_ALLOW[1],
+      'https://example.com/budget-child-1.xml': () =>
+        new Response(urlsetBody([]), { status: 200, headers: { 'content-type': 'application/xml' } }),
+      'https://example.com/budget-child-2.xml': () =>
+        new Response(urlsetBody([]), { status: 200, headers: { 'content-type': 'application/xml' } }),
+      'https://example.com/budget-child-3.xml': () =>
+        new Response(urlsetBody([]), { status: 200, headers: { 'content-type': 'application/xml' } }),
+    });
+    const { fetch: trackedFetch, calls } = trackingFetch(stub);
+    const counts2 = {
+      childrenTruncated: 0,
+      depthTruncated: 0,
+      originBlocked: 0,
+      missingLastmodSkipped: 0,
+      feedItemsTruncated: 0,
+      fetchBudgetTruncated: 0,
+      fetchesUsed: 0,
+    };
+    await traverseSitemapIndex(
+      buildCtx(trackedFetch, '2026-07-01T00:00:00.000Z'),
+      buildParsedIndex(true),
+      0,
+      cutoffIso,
+      3,
+      counts2,
+      2, // maxFetchesPerCheck injected (mirrors processFeedItems's maxItems test pattern)
+    );
+
+    // budget-child-3 has the newest lastmod (2026-07-10T18:00:00) among the 3, so lastmod-descending
+    // priority puts it first; budget-child-2 (07-10T12:00) second; budget-child-1 (07-10T00:00) last.
+    // With a budget of 2, only the two newest are fetched.
+    expect(calls.some((u) => u.includes('budget-child-3.xml'))).toBe(true);
+    expect(calls.some((u) => u.includes('budget-child-2.xml'))).toBe(true);
+    expect(calls.some((u) => u.includes('budget-child-1.xml'))).toBe(false);
+    expect(counts2.fetchBudgetTruncated).toBe(1);
+    expect(counts2.fetchesUsed).toBe(2);
+
+    const targets = await listTargetsByMonitor(db(), monitor.id);
+    const child1 = targets.find((t) => t.url === 'https://example.com/budget-child-1.xml');
+    const child3 = targets.find((t) => t.url === 'https://example.com/budget-child-3.xml');
+    // budget-child-1 was budget-blocked: its watermark stays at the old value.
+    expect(child1?.lastKnownUpdatedAt).toBe(WITHIN_CUTOFF_A);
+    // budget-child-3 was actually fetched+expanded (empty urlset, no further truncation): watermark advances.
+    expect(child3?.lastKnownUpdatedAt).toBe('2026-07-10T18:00:00.000Z');
   });
 });

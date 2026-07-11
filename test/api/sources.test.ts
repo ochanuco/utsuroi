@@ -139,6 +139,37 @@ describe('POST /api/sources: config (ADR-0010 Phase B sitemapMode)', () => {
     const body = (await res.json()) as any;
     expect(body.error.code).toBe('config_not_applicable');
   });
+
+  it('rejects an invalid sitemap_mode enum value and out-of-range lastmod_max_age_days / max_depth (400)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const invalidConfigs = [
+      { sitemap_mode: 'invalid' },
+      { lastmod_max_age_days: 0 },
+      { lastmod_max_age_days: 31 },
+      { max_depth: 0 },
+      { max_depth: 6 },
+    ];
+
+    for (const config of invalidConfigs) {
+      const res = await app.request(
+        '/api/sources',
+        {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({
+            site_id: site.id,
+            type: 'sitemap-index',
+            url: `https://example.com/invalid-config-${JSON.stringify(config)}.xml`,
+            config,
+          }),
+        },
+        testEnv()
+      );
+      expect(res.status, `expected 400 for config ${JSON.stringify(config)}`).toBe(400);
+    }
+  });
 });
 
 describe('GET /api/sources', () => {
