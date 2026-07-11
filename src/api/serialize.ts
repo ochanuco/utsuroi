@@ -59,6 +59,9 @@ export function serializeSource(row: SourceRow) {
                 item_selector: row.config.extract.itemSelector,
                 link_selector: row.config.extract.linkSelector ?? null,
                 title_selector: row.config.extract.titleSelector ?? null,
+                // ADR-0013: 構造化フィールド抽出設定。API入力と同じ形状 (name/selector/label) の
+                // ままなのでキー名の変換は不要 (null passthrough で揃える)。
+                fields: row.config.extract.fields ?? null,
               }
             : null,
           ignore_selectors: row.config.ignoreSelectors ?? null,

@@ -210,7 +210,7 @@ describe('POST /api/sources: config (ADR-0011 page item extraction)', () => {
       lastmod_max_age_days: null,
       max_depth: null,
       page_mode: 'extract',
-      extract: { item_selector: '.property_unit', link_selector: null, title_selector: null },
+      extract: { item_selector: '.property_unit', link_selector: null, title_selector: null, fields: null },
       ignore_selectors: null,
       include_selectors: null,
       strip_query_params: null,
@@ -358,6 +358,245 @@ describe('POST /api/sources: config (ADR-0011 page item extraction)', () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
     expect(body.error.code).toBe('invalid_selector');
+  });
+});
+
+// ADR-0013: extract.fields (構造化フィールド抽出) の検証。
+describe('POST /api/sources: config (ADR-0013 extract.fields)', () => {
+  it('creates a page source with selector-方式/label-方式混在の fields (201) and echoes it back', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'page',
+          url: 'https://example.com/listing-fields',
+          config: {
+            page_mode: 'extract',
+            extract: {
+              item_selector: '.property_unit',
+              fields: [
+                { name: '価格', selector: '.dottable-value' },
+                { name: '所在地', label: '所在地' },
+              ],
+            },
+          },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.config.extract.fields).toEqual([
+      { name: '価格', selector: '.dottable-value' },
+      { name: '所在地', label: '所在地' },
+    ]);
+  });
+
+  it('rejects a field with both selector and label (400 invalid_field)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'page',
+          url: 'https://example.com/field-both',
+          config: {
+            page_mode: 'extract',
+            extract: {
+              item_selector: '.item',
+              fields: [{ name: '価格', selector: '.price', label: '価格' }],
+            },
+          },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error.code).toBe('invalid_field');
+  });
+
+  it('rejects a field with neither selector nor label (400 invalid_field)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'page',
+          url: 'https://example.com/field-neither',
+          config: {
+            page_mode: 'extract',
+            extract: { item_selector: '.item', fields: [{ name: '価格' }] },
+          },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error.code).toBe('invalid_field');
+  });
+
+  it('rejects an invalid field selector (400 invalid_selector)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'page',
+          url: 'https://example.com/field-invalid-selector',
+          config: {
+            page_mode: 'extract',
+            extract: { item_selector: '.item', fields: [{ name: '価格', selector: ':hover' }] },
+          },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error.code).toBe('invalid_selector');
+  });
+
+  it('rejects more than 12 fields (400)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const fields = Array.from({ length: 13 }, (_, i) => ({ name: `field-${i}`, label: `label-${i}` }));
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'page',
+          url: 'https://example.com/too-many-fields',
+          config: { page_mode: 'extract', extract: { item_selector: '.item', fields } },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('PATCH /api/sources/:id (ADR-0013 config更新)', () => {
+  async function makePageSource(app: ReturnType<typeof buildTestApp>['app'], site: { id: string }, url: string) {
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'page',
+          url,
+          config: { page_mode: 'extract', extract: { item_selector: '.property_unit' } },
+        }),
+      },
+      testEnv()
+    );
+    return (await res.json()) as any;
+  }
+
+  it('updates config and records an audit event (source.update_config)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+    const created = await makePageSource(app, site, 'https://example.com/patch-target');
+
+    const res = await app.request(
+      `/api/sources/${created.id}`,
+      {
+        method: 'PATCH',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          config: {
+            page_mode: 'extract',
+            extract: {
+              item_selector: '.property_unit',
+              fields: [{ name: '価格', selector: '.price' }],
+            },
+          },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.config.extract.fields).toEqual([{ name: '価格', selector: '.price' }]);
+
+    const events = await listAuditEventsBySubject(db(), created.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ action: 'source.update_config', actor: 'admin', subject: created.id });
+  });
+
+  it('returns 404 for an unknown source id', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request(
+      '/api/sources/nope',
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ config: {} }) },
+      testEnv()
+    );
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as any).error.code).toBe('source_not_found');
+  });
+
+  it('rejects a config key not applicable to the source type (400 config_not_applicable)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+    const created = await makePageSource(app, site, 'https://example.com/patch-bad-key');
+
+    const res = await app.request(
+      `/api/sources/${created.id}`,
+      {
+        method: 'PATCH',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ config: { sitemap_mode: 'traverse' } }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error.code).toBe('config_not_applicable');
+  });
+
+  it('does not allow url/type/site_id to be changed via PATCH (unknown top-level keys rejected)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+    const created = await makePageSource(app, site, 'https://example.com/patch-immutable');
+
+    const res = await app.request(
+      `/api/sources/${created.id}`,
+      {
+        method: 'PATCH',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ url: 'https://example.com/should-not-change', config: {} }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+
+    const getRes = await app.request(`/api/sources/${created.id}`, { headers: authHeaders() }, testEnv());
+    const getBody = (await getRes.json()) as any;
+    expect(getBody.url).toBe('https://example.com/patch-immutable');
   });
 });
 

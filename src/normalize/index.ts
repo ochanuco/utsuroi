@@ -3,7 +3,7 @@ export type { NormalizeExtraOptions } from './normalize';
 export { diffText, compareSnapshots } from './diff';
 export { extractCharsetFromContentType } from './charset';
 export { extractItems } from './extractItems';
-export type { ExtractItemsOptions } from './extractItems';
+export type { ExtractedItem, ExtractFieldOptions, ExtractItemsOptions } from './extractItems';
 export {
   NORMALIZATION_VERSION,
   DEFAULT_STRIP_QUERY_PARAMS,

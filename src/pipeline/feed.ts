@@ -120,6 +120,16 @@ export interface ProcessFeedItemsResult {
   truncatedCount: number;
 }
 
+export interface ProcessFeedItemsOptions {
+  /**
+   * true の場合のみ、insertChangeIfNew ('new'/'updated' 双方) に
+   * diffPreview: item.summary を渡す (ADR-0013)。既定 false — pageItems.ts (アイテム抽出モード)
+   * 経由の呼び出しだけが true を渡し、rss/atom アダプタ等の通知内容は変更しない
+   * (summary はHTML断片や長文になり得るため、一般化はサニタイズ・上限設計とセットで将来判断する)。
+   */
+  summaryAsDiffPreview?: boolean;
+}
+
 /**
  * rss/atom/sitemap の item 一覧を Target 化し、新規/更新を検出して通知する。
  *
@@ -134,6 +144,7 @@ export async function processFeedItems(
   ctx: CheckContext,
   items: FeedItem[],
   maxItems: number = MAX_FEED_ITEMS_PER_CHECK,
+  opts: ProcessFeedItemsOptions = {},
 ): Promise<ProcessFeedItemsResult> {
   const nowIso = new Date(ctx.now()).toISOString();
 
@@ -191,6 +202,9 @@ export async function processFeedItems(
         dedupeKey: item.stableKey,
         title: item.title,
         detectedAt: nowIso,
+        // ADR-0013: pageItems.ts 経由の呼び出しのみ opt-in (summaryAsDiffPreview) で
+        // summary (fields整形結果) を diff_preview として通知に載せる。
+        diffPreview: opts.summaryAsDiffPreview ? (item.summary ?? undefined) : undefined,
       });
       await notifyForChange(ctx, inserted.row);
       if (inserted.inserted) ctx.changeIds.push(inserted.row.id);
@@ -214,6 +228,7 @@ export async function processFeedItems(
         dedupeKey: `${item.stableKey}:${item.updatedAt}`,
         title: item.title,
         detectedAt: nowIso,
+        diffPreview: opts.summaryAsDiffPreview ? (item.summary ?? undefined) : undefined,
       });
       await notifyForChange(ctx, inserted.row);
       if (inserted.inserted) ctx.changeIds.push(inserted.row.id);

@@ -103,6 +103,7 @@ describe('extractItems: 公開契約 (extractItems(body, opts) => Promise<FeedIt
         publishedAt: null,
         updatedAt: null,
         summary: null,
+        fields: [],
       },
       {
         stableKey: 'https://example.com/two',
@@ -111,6 +112,7 @@ describe('extractItems: 公開契約 (extractItems(body, opts) => Promise<FeedIt
         publishedAt: null,
         updatedAt: null,
         summary: null,
+        fields: [],
       },
     ]);
   });
@@ -244,5 +246,157 @@ describe('extractItems: 公開契約 (extractItems(body, opts) => Promise<FeedIt
     const html = `<div class="item"><h2>No link</h2></div>`;
     const items = await extractItems(toBytes(html), { itemSelector: '.item', titleSelector: 'h2', baseUrl });
     expect(items).toEqual([]);
+  });
+
+  it('fields 未指定時は items[].fields が空配列になり、既存の url/title 抽出は一切変わらない (回帰ゼロ)', async () => {
+    const html = `<div class="item"><h2>Regression</h2><a href="/x">go</a></div>`;
+    const items = await extractItems(toBytes(html), { itemSelector: '.item', titleSelector: 'h2', baseUrl });
+    expect(items).toHaveLength(1);
+    expect(items[0]!.fields).toEqual([]);
+    expect(items[0]!.title).toBe('Regression');
+    expect(items[0]!.url).toBe('https://example.com/x');
+  });
+});
+
+describe('extractItems: extract.fields セレクタ方式 (ADR-0013)', () => {
+  it('アイテム内の最初のマッチのサブツリーテキストを値として抽出する', async () => {
+    const html = `<div class="item">
+      <a href="/x">go</a>
+      <span class="dottable-value">3,980万円</span>
+    </div>`;
+    const items = await extractItems(toBytes(html), {
+      itemSelector: '.item',
+      baseUrl,
+      fields: [{ name: '価格', selector: '.dottable-value' }],
+    });
+    expect(items[0]!.fields).toEqual([{ name: '価格', value: '3,980万円' }]);
+  });
+
+  it('セレクタが同一アイテム内で複数マッチしても最初のマッチだけを採用する', async () => {
+    const html = `<div class="item">
+      <a href="/x">go</a>
+      <span class="dottable-value">First</span>
+      <span class="dottable-value">Second</span>
+    </div>`;
+    const items = await extractItems(toBytes(html), {
+      itemSelector: '.item',
+      baseUrl,
+      fields: [{ name: '価格', selector: '.dottable-value' }],
+    });
+    expect(items[0]!.fields).toEqual([{ name: '価格', value: 'First' }]);
+  });
+
+  it('セレクタにマッチしないフィールドは結果から省く', async () => {
+    const html = `<div class="item"><a href="/x">go</a></div>`;
+    const items = await extractItems(toBytes(html), {
+      itemSelector: '.item',
+      baseUrl,
+      fields: [{ name: '価格', selector: '.dottable-value' }],
+    });
+    expect(items[0]!.fields).toEqual([]);
+  });
+
+  it('値は正規化後200文字で切り詰める', async () => {
+    const longValue = 'あ'.repeat(300);
+    const html = `<div class="item"><a href="/x">go</a><span class="v">${longValue}</span></div>`;
+    const items = await extractItems(toBytes(html), {
+      itemSelector: '.item',
+      baseUrl,
+      fields: [{ name: '長い値', selector: '.v' }],
+    });
+    expect(items[0]!.fields).toEqual([{ name: '長い値', value: longValue.slice(0, 200) }]);
+  });
+});
+
+describe('extractItems: extract.fields ラベル方式 dt/dd (ADR-0013, SUUMO風フィクスチャ)', () => {
+  /**
+   * SUUMO一覧の実HTML (ADR-0013 Context) を模したフィクスチャ:
+   * - dl が table (tbody > tr > td) の中に入れ子になっている
+   * - `<dt>&nbsp;</dt>` のダミーラベル行がある
+   * - 値に `<sup>` (面積の m² 表記) を含む
+   * - 専用クラス (`.dottable-value`) を持つセレクタ方式フィールドも同じアイテムに混在する
+   */
+  function suumoLikeItemHtml(): string {
+    return `<li class="property_unit">
+      <a href="/units/1">詳細を見る</a>
+      <div class="dottable"><span class="dottable-value">3,980万円</span></div>
+      <table><tbody><tr><td>
+        <dl>
+          <dt>&nbsp;</dt>
+          <dd>ダミー行 (無視される)</dd>
+          <dt>所在地</dt>
+          <dd>東京都渋谷区</dd>
+          <dt>専有面積</dt>
+          <dd>52.30m<sup>2</sup></dd>
+        </dl>
+      </td></tr></tbody></table>
+    </li>`;
+  }
+
+  const fields = [
+    { name: '価格', selector: '.dottable-value' },
+    { name: '所在地', label: '所在地' },
+    { name: '面積', label: '専有面積' },
+    { name: '間取り', label: '間取り' }, // このアイテムには存在しないラベル -> 未マッチで省かれる
+  ];
+
+  it('dt のラベルテキストが完全一致する直後の dd を値として抽出する (table入れ子・セレクタ方式との混在を含む)', async () => {
+    const html = `<ul>${suumoLikeItemHtml()}</ul>`;
+    const items = await extractItems(toBytes(html), { itemSelector: '.property_unit', baseUrl, fields });
+    expect(items).toHaveLength(1);
+    expect(items[0]!.fields).toEqual([
+      { name: '価格', value: '3,980万円' },
+      { name: '所在地', value: '東京都渋谷区' },
+      { name: '面積', value: '52.30m2' },
+      // '間取り' はこのアイテムに存在しないラベルのため省かれる
+    ]);
+  });
+
+  it('`<dt>&nbsp;</dt>` のようなダミーラベル行は正規化後に空文字になりラベルとして扱わない', async () => {
+    // ダミー dt の直後の dd (「ダミー行 (無視される)」) がどのフィールドにも紐付かないことを確認する。
+    const html = `<ul>${suumoLikeItemHtml()}</ul>`;
+    const items = await extractItems(toBytes(html), {
+      itemSelector: '.property_unit',
+      baseUrl,
+      fields: [{ name: '所在地', label: '所在地' }],
+    });
+    expect(items[0]!.fields).toEqual([{ name: '所在地', value: '東京都渋谷区' }]);
+  });
+
+  it('同一ラベルが複数回出現する場合は最初の一致だけを採用する', async () => {
+    const html = `<div class="item">
+      <a href="/x">go</a>
+      <dl>
+        <dt>所在地</dt><dd>First Address</dd>
+        <dt>所在地</dt><dd>Second Address</dd>
+      </dl>
+    </div>`;
+    const items = await extractItems(toBytes(html), {
+      itemSelector: '.item',
+      baseUrl,
+      fields: [{ name: '所在地', label: '所在地' }],
+    });
+    expect(items[0]!.fields).toEqual([{ name: '所在地', value: 'First Address' }]);
+  });
+
+  it('ラベルにマッチしないフィールドは結果から省く', async () => {
+    const html = `<div class="item"><a href="/x">go</a><dl><dt>所在地</dt><dd>東京都</dd></dl></div>`;
+    const items = await extractItems(toBytes(html), {
+      itemSelector: '.item',
+      baseUrl,
+      fields: [{ name: '間取り', label: '間取り' }],
+    });
+    expect(items[0]!.fields).toEqual([]);
+  });
+
+  it('label の値は正規化後200文字で切り詰める', async () => {
+    const longValue = 'い'.repeat(300);
+    const html = `<div class="item"><a href="/x">go</a><dl><dt>備考</dt><dd>${longValue}</dd></dl></div>`;
+    const items = await extractItems(toBytes(html), {
+      itemSelector: '.item',
+      baseUrl,
+      fields: [{ name: '備考', label: '備考' }],
+    });
+    expect(items[0]!.fields).toEqual([{ name: '備考', value: longValue.slice(0, 200) }]);
   });
 });

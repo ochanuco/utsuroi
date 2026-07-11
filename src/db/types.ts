@@ -55,7 +55,7 @@ export interface SourceConfig {
   stripQueryParams?: string[];
   /** page Source の監視方式。既定 'content' (本文差分)。'extract' で ADR-0011 のアイテム抽出モード */
   pageMode?: 'content' | 'extract';
-  /** pageMode === 'extract' のときの抽出設定 (ADR-0011) */
+  /** pageMode === 'extract' のときの抽出設定 (ADR-0011, ADR-0013) */
   extract?: {
     /** アイテム集合を区切る CSS セレクタ (必須, 例: '.property_unit') */
     itemSelector: string;
@@ -63,6 +63,11 @@ export interface SourceConfig {
     linkSelector?: string;
     /** アイテム内でタイトルを探す CSS セレクタ (省略時はリンクテキストにフォールバック) */
     titleSelector?: string;
+    /**
+     * 構造化フィールド抽出の設定 (ADR-0013、価格・所在地等)。最大12件、各要素は
+     * selector/label のどちらか一方を持つ (作成/更新API が同期セレクタ検証込みで検証する)。
+     */
+    fields?: Array<{ name: string; selector?: string; label?: string }>;
   };
 }
 
