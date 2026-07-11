@@ -286,6 +286,12 @@ function renderSourceCard(source, monitorsForSource, monitorsFetchFailed, onSour
   return card;
 }
 
+// sitemap / sitemap-index 選択時のみ表示するモード選択 (ADR-0010: Direct既定 / lastmod探索)。
+const SITEMAP_MODE_OPTIONS = [
+  { value: 'direct', text: 'Direct（URL集合の差分・既定）' },
+  { value: 'traverse', text: 'lastmod探索（子sitemapを辿って新着配信）' },
+];
+
 function renderAddSourceForm(siteId, onSourcesChanged) {
   const wrap = el('div', { class: 'source-add-form' });
   wrap.appendChild(el('h4', { text: 'Sourceを追加' }));
@@ -299,6 +305,26 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
   const intervalInput = el('input', {
     attrs: { type: 'number', min: 1, step: 1, placeholder: '空欄なら監視なしで作成' },
   });
+
+  // sitemap系のときだけ表示するモード選択。数値設定 (lastmod_max_age_days / max_depth) は
+  // API専用でUIは提供しない (brief参照)。
+  const sitemapModeSelect = el(
+    'select',
+    {},
+    SITEMAP_MODE_OPTIONS.map((o) => el('option', { attrs: { value: o.value }, text: o.text }))
+  );
+  const sitemapModeField = field('Sitemapモード', sitemapModeSelect);
+  sitemapModeField.classList.add('hidden');
+
+  function isSitemapType(type) {
+    return type === 'sitemap' || type === 'sitemap-index';
+  }
+  function syncSitemapModeVisibility() {
+    sitemapModeField.classList.toggle('hidden', !isSitemapType(typeSelect.value));
+  }
+  typeSelect.addEventListener('change', syncSitemapModeVisibility);
+  syncSitemapModeVisibility();
+
   const errorEl = el('p', { class: 'error hidden' });
 
   const form = el('form', {
@@ -310,9 +336,14 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
         if (!url) return;
         const minutesRaw = intervalInput.value.trim();
 
+        const sourceBody = { site_id: siteId, type: typeSelect.value, url };
+        if (isSitemapType(typeSelect.value) && sitemapModeSelect.value === 'traverse') {
+          sourceBody.config = { sitemap_mode: 'traverse' };
+        }
+
         let source;
         try {
-          source = await api.post('/sources', { site_id: siteId, type: typeSelect.value, url });
+          source = await api.post('/sources', sourceBody);
         } catch (err) {
           errorEl.textContent = `作成に失敗しました: ${err.message}`;
           errorEl.classList.remove('hidden');
@@ -361,6 +392,7 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
   form.appendChild(
     fieldRow([field('種別', typeSelect), field('URL', urlInput), field('監視間隔 (分・空欄なら監視なし)', intervalInput)])
   );
+  form.appendChild(fieldRow([sitemapModeField]));
   form.appendChild(el('button', { attrs: { type: 'submit' }, text: 'Sourceを追加' }));
   form.appendChild(errorEl);
   wrap.appendChild(form);

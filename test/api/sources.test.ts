@@ -92,6 +92,86 @@ describe('POST /api/sources', () => {
   });
 });
 
+// ADR-0010 Phase B: sitemap/sitemap-index Source の任意 config (sitemap_mode 等)。
+describe('POST /api/sources: config (ADR-0010 Phase B sitemapMode)', () => {
+  it('creates a sitemap-index source with a traverse config (201) and echoes it back snake_case', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'sitemap-index',
+          url: 'https://example.com/sitemap-index.xml',
+          config: { sitemap_mode: 'traverse', lastmod_max_age_days: 5, max_depth: 2 },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.config).toEqual({ sitemap_mode: 'traverse', lastmod_max_age_days: 5, max_depth: 2 });
+  });
+
+  it('rejects config for a page-type source (400 config_not_applicable)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'page',
+          url: 'https://example.com/page',
+          config: { sitemap_mode: 'traverse' },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe('config_not_applicable');
+  });
+
+  it('rejects an invalid sitemap_mode enum value and out-of-range lastmod_max_age_days / max_depth (400)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const invalidConfigs = [
+      { sitemap_mode: 'invalid' },
+      { lastmod_max_age_days: 0 },
+      { lastmod_max_age_days: 31 },
+      { max_depth: 0 },
+      { max_depth: 6 },
+    ];
+
+    for (const config of invalidConfigs) {
+      const res = await app.request(
+        '/api/sources',
+        {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({
+            site_id: site.id,
+            type: 'sitemap-index',
+            url: `https://example.com/invalid-config-${JSON.stringify(config)}.xml`,
+            config,
+          }),
+        },
+        testEnv()
+      );
+      expect(res.status, `expected 400 for config ${JSON.stringify(config)}`).toBe(400);
+    }
+  });
+});
+
 describe('GET /api/sources', () => {
   it('lists sources by site_id', async () => {
     const { app } = buildTestApp();

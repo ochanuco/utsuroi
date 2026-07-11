@@ -114,13 +114,13 @@ describe('runMonitorCheck: rss feed (SPEC §17.8: no duplicate entry notificatio
   });
 });
 
-// ADR-0010 Phase A (Sitemap Direct): sitemap-index Source は runMonitorCheck 経由では
-// もはや processFeedContent (子Sitemap展開 → item Target化) に到達しない — 既定で
-// processSitemapDirect (URL集合のsnapshot+diff、個々のURLをTarget化しない) に置き換わった。
-// この置き換え自体の runMonitorCheck レベルのテストは test/pipeline/sitemapDirect.test.ts に
-// 移した (6,021件規模でもTarget爆発しないことを含む)。processFeedContent の子Sitemap展開
-// (processSitemapIndexChildren) は Phase B (lastmodベース探索) での再利用のためコードとして
-// 残すのみで、削除しない (runCheck.ts はもう呼び出さない)。
+// ADR-0010 Phase A (Sitemap Direct) / Phase B (Sitemap 探索): sitemap-index Source は
+// runMonitorCheck 経由ではもはや processFeedContent に到達しない — 既定で processSitemapDirect
+// (URL集合のsnapshot+diff、個々のURLをTarget化しない)、config.sitemapMode==='traverse' なら
+// processSitemapTraversal (lastmodベース差分探索) に置き換わった。この置き換え自体の
+// runMonitorCheck レベルのテストは test/pipeline/sitemapDirect.test.ts / sitemapTraversal.test.ts に
+// 移した (6,021件規模でもTarget爆発しないことを含む)。旧 processSitemapIndexChildren の
+// SSRF/robots/条件付きフェッチ/304処理ロジックは sitemapTraversal.ts へ移植し、feed.ts からは削除した。
 
 describe('processFeedContent: parse failure does not create a Snapshot (CodeRabbit review 2)', () => {
   it('records the fetch as successful but creates no Snapshot when the feed body is unparsable', async () => {

@@ -46,6 +46,14 @@ export function serializeSource(row: SourceRow) {
     site_id: row.siteId,
     type: row.type,
     url: row.url,
+    // config (ADR-0010 Phase B): camelCase内部表現 -> snake_case API出力。null はそのまま null。
+    config: row.config
+      ? {
+          sitemap_mode: row.config.sitemapMode ?? null,
+          lastmod_max_age_days: row.config.lastmodMaxAgeDays ?? null,
+          max_depth: row.config.maxDepth ?? null,
+        }
+      : null,
     created_at: row.createdAt,
     updated_at: row.updatedAt,
   };

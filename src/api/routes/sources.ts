@@ -15,16 +15,38 @@ import {
   getSource,
   listSourcesBySite,
   recordAuditEvent,
+  type SourceConfig,
 } from '../../db';
 import { badRequest, conflict, notFound } from '../errors';
 import { parsePagination, parseWith, readJsonBody } from '../http';
 import { serializeSource } from '../serialize';
 
+// ADR-0010 Phase B: sitemap / sitemap-index Source のみ config を受け付ける (他typeは400)。
+const sourceConfigSchema = z
+  .object({
+    sitemap_mode: z.enum(['direct', 'traverse']).optional(),
+    lastmod_max_age_days: z.number().int().min(1).max(30).optional(),
+    max_depth: z.number().int().min(1).max(5).optional(),
+  })
+  .strict()
+  .optional();
+
 const createSourceSchema = z.object({
   site_id: z.string().min(1),
   type: z.enum(['page', 'rss', 'atom', 'sitemap', 'sitemap-index']),
   url: z.string().min(1),
+  config: sourceConfigSchema,
 });
+
+/** snake_case (API入力) -> camelCase (SourceConfig) */
+function toSourceConfig(input: z.infer<typeof createSourceSchema>['config']): SourceConfig | undefined {
+  if (!input) return undefined;
+  const config: SourceConfig = {};
+  if (input.sitemap_mode !== undefined) config.sitemapMode = input.sitemap_mode;
+  if (input.lastmod_max_age_days !== undefined) config.lastmodMaxAgeDays = input.lastmod_max_age_days;
+  if (input.max_depth !== undefined) config.maxDepth = input.max_depth;
+  return config;
+}
 
 export function sourcesRoutes(opts: { ssrfResolver?: DnsResolver } = {}) {
   const router = new Hono<{ Bindings: Env }>();
@@ -45,7 +67,16 @@ export function sourcesRoutes(opts: { ssrfResolver?: DnsResolver } = {}) {
       throw badRequest('ssrf_blocked', `url rejected by SSRF check: ${resolvedCheck.reason}`);
     }
 
-    const source = await createSource(c.env.DB, { siteId: body.site_id, type: body.type, url: body.url });
+    if (body.config && body.type !== 'sitemap' && body.type !== 'sitemap-index') {
+      throw badRequest('config_not_applicable', 'config is only applicable to sitemap/sitemap-index sources');
+    }
+
+    const source = await createSource(c.env.DB, {
+      siteId: body.site_id,
+      type: body.type,
+      url: body.url,
+      config: toSourceConfig(body.config),
+    });
     return c.json(serializeSource(source), 201);
   });
 

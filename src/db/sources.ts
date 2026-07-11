@@ -1,5 +1,5 @@
-import type { CreateSourceInput, SourceRow } from './types';
-import { newId, nowIso } from './util';
+import type { CreateSourceInput, SourceConfig, SourceRow } from './types';
+import { newId, nowIso, parseJson, toJson } from './util';
 
 function mapRow(row: Record<string, unknown>): SourceRow {
   return {
@@ -7,6 +7,8 @@ function mapRow(row: Record<string, unknown>): SourceRow {
     siteId: row.site_id as string,
     type: row.type as SourceRow['type'],
     url: row.url as string,
+    // config 列は JSON文字列 (未設定は NULL)。parse失敗時も null 扱いにする (parseJson の既定挙動)。
+    config: parseJson<SourceConfig | null>(row.config as string | null, null),
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   };
@@ -15,13 +17,14 @@ function mapRow(row: Record<string, unknown>): SourceRow {
 export async function createSource(db: D1Database, input: CreateSourceInput): Promise<SourceRow> {
   const id = input.id ?? newId();
   const now = nowIso();
+  const config = input.config ?? null;
   await db
     .prepare(
-      `INSERT INTO sources (id, site_id, type, url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO sources (id, site_id, type, url, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(id, input.siteId, input.type, input.url, now, now)
+    .bind(id, input.siteId, input.type, input.url, toJson(config), now, now)
     .run();
-  return { id, siteId: input.siteId, type: input.type, url: input.url, createdAt: now, updatedAt: now };
+  return { id, siteId: input.siteId, type: input.type, url: input.url, config, createdAt: now, updatedAt: now };
 }
 
 export async function getSource(db: D1Database, id: string): Promise<SourceRow | null> {
