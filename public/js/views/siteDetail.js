@@ -924,9 +924,95 @@ async function renderRobotsOverridesSection(container, site) {
   }
 }
 
+// --- Site名の表示とインライン変更 ----------------------------------------------
+
+/**
+ * 「Site: <名前>」見出し + 名前変更ボタン。ボタンを押すと見出しがインライン編集フォーム
+ * (入力 + 保存/キャンセル) に切り替わる。保存は PATCH /api/sites/:id → 成功後 onRenamed()
+ * でページ全体を再描画する。
+ */
+function renderSiteTitle(site, onRenamed) {
+  const wrap = el('div', { class: 'site-title-row' });
+  const heading = el('h2', { text: `Site: ${site.name}` });
+  const errorEl = el('p', { class: 'error hidden' });
+
+  const nameInput = el('input', {
+    attrs: { type: 'text', required: true, value: site.name, 'aria-label': 'Site名' },
+  });
+  const saveButton = el('button', { attrs: { type: 'submit' }, text: '保存' });
+  let saving = false; // 二重送信ガード (Enter連打・ボタン連打で PATCH が重複しないように)
+  const editForm = el('form', {
+    class: 'inline-form hidden',
+    on: {
+      submit: async (event) => {
+        event.preventDefault();
+        if (saving) return;
+        errorEl.classList.add('hidden');
+        const name = nameInput.value.trim();
+        if (!name) {
+          errorEl.textContent = '名前を入力してください（空白のみは不可）。';
+          errorEl.classList.remove('hidden');
+          return;
+        }
+        saving = true;
+        saveButton.disabled = true;
+        try {
+          await api.patch(`/sites/${encodeURIComponent(site.id)}`, { name });
+          await onRenamed(); // 成功時はページ全体を再描画 (このフォームごと破棄される)
+        } catch (err) {
+          errorEl.textContent = `名前の変更に失敗しました: ${err.message}`;
+          errorEl.classList.remove('hidden');
+        } finally {
+          saving = false;
+          saveButton.disabled = false;
+        }
+      },
+    },
+  });
+
+  const startEdit = () => {
+    heading.classList.add('hidden');
+    renameButton.classList.add('hidden');
+    editForm.classList.remove('hidden');
+    nameInput.value = site.name;
+    nameInput.focus();
+  };
+  const cancelEdit = () => {
+    editForm.classList.add('hidden');
+    errorEl.classList.add('hidden');
+    heading.classList.remove('hidden');
+    renameButton.classList.remove('hidden');
+  };
+
+  const renameButton = el('button', {
+    class: 'button-ghost',
+    attrs: { type: 'button' },
+    text: '名前を変更',
+    on: { click: startEdit },
+  });
+
+  editForm.appendChild(nameInput);
+  editForm.appendChild(saveButton);
+  editForm.appendChild(
+    el('button', { class: 'button-ghost', attrs: { type: 'button' }, text: 'キャンセル', on: { click: cancelEdit } })
+  );
+
+  wrap.appendChild(heading);
+  wrap.appendChild(renameButton);
+  wrap.appendChild(editForm);
+  wrap.appendChild(errorEl);
+  return wrap;
+}
+
 // --- top-level view -----------------------------------------------------------
 
+// siteDetailView をビュー内から直接再呼び出しする経路 (reloadAll / 名前変更後) 用の世代カウンタ。
+// router.js の renderGeneration はハッシュ遷移経由の render しか守らないため、ビュー内再描画にも
+// 同じ「古い非同期結果の DOM 反映を捨てる」ガードを掛ける (多重再描画時の残骸防止)。
+let detailGeneration = 0;
+
 async function siteDetailView(container, params) {
+  const generation = ++detailGeneration;
   const siteId = params.id;
   clear(container);
   container.appendChild(el('p', { class: 'breadcrumbs' }, [el('a', { attrs: { href: '#/sites' }, text: '← Sites一覧' })]));
@@ -935,11 +1021,21 @@ async function siteDetailView(container, params) {
   try {
     site = await api.get(`/sites/${encodeURIComponent(siteId)}`);
   } catch (err) {
+    if (generation !== detailGeneration) return; // 既に新しい再描画が開始済み
     renderError(container, err);
     return;
   }
+  if (generation !== detailGeneration) return;
 
-  container.appendChild(el('h2', { text: `Site: ${site.name}` }));
+  container.appendChild(
+    renderSiteTitle(site, async () => {
+      // PATCH 完了までの間に別ページへ遷移していたら再描画しない (このSiteの詳細を
+      // 現在のビューへ上書きしてしまうのを防ぐ)。同じSiteを表示中の場合のみ再描画する。
+      const hash = location.hash.replace(/^#/, '');
+      if (!hash.startsWith(`/sites/${siteId}`)) return;
+      await siteDetailView(container, params);
+    })
+  );
   const kv = el('dl', { class: 'kv' });
   kv.appendChild(el('dt', { text: 'Primary Origin' }));
   kv.appendChild(el('dd', { text: site.primary_origin ?? '—' }));
@@ -961,6 +1057,9 @@ async function siteDetailView(container, params) {
     renderFetcherPolicySection(container, siteId),
     renderRobotsOverridesSection(container, site),
   ]);
+  // 待機中に新しい再描画が始まっていたら、エラー表示や危険操作セクションを
+  // (クリア済みの) container へ追記しない。
+  if (generation !== detailGeneration) return;
 
   if (sourcesResult.status === 'rejected') {
     appendError(container, sourcesResult.reason);
