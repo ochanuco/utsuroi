@@ -217,6 +217,32 @@ describe('POST /api/sources: config (ADR-0011 page item extraction)', () => {
     });
   });
 
+  it('creates a page source with include/ignore selectors for content-diff mode (201)', async () => {
+    // 本文差分モードの DOM 抽出/除外セレクタは page type に適用可能なキー
+    // (PAGE_ONLY_CONFIG_KEYS)。UI から config として送っても config_not_applicable に
+    // ならないことの固定 (UIレビューでの誤指摘に対する回帰テスト)。
+    const { app } = buildTestApp();
+    const site = await makeSite();
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'page',
+          url: 'https://example.com/article',
+          config: { include_selectors: ['#main'], ignore_selectors: ['.ads', '#sidebar'] },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.config.include_selectors).toEqual(['#main']);
+    expect(body.config.ignore_selectors).toEqual(['.ads', '#sidebar']);
+  });
+
   it('rejects sitemap_mode config for a page-type source (400 config_not_applicable)', async () => {
     const { app } = buildTestApp();
     const site = await makeSite();
