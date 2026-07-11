@@ -3,9 +3,31 @@
  *
  * 冪等性の要: dedupeKey が既知の値と同一なら insertChangeIfNew は no-op を返す。
  * - 新規 Target 発見時: dedupeKey = stableKey → 'new' Change (2回目以降の同一 stableKey は無視)
- * - 既存 Target で updatedAt を確認できる場合: dedupeKey = `${stableKey}:${updatedAt}` → 'updated' Change
- *   (updatedAt が変わらない限り同じ dedupeKey になるため、再チェックしても重複通知しない)
+ * - 既存 Target で updatedAt を確認できる場合: Target の watermark (last_known_updated_at,
+ *   migrations/0005_target_updated_watermark.sql) と実際に異なる場合のみ dedupeKey =
+ *   `${stableKey}:${updatedAt}` → 'updated' Change (dedupeKey 自体も同じ値の再チェックでは
+ *   no-op になる保険として維持)。watermark は新規 Target 発見時に初期値を記録し、既存 Target では
+ *   'updated' Change の挿入・通知試行が完了した後にのみ進める (crash 後の at-least-once 復旧を
+ *   壊さないため、詳細は processFeedItems 内のコメント参照)。
  * RSS は仕様上 updatedAt を持たないため (src/adapters/rss.ts)、既存 entry の再取得では 'updated' を作らない。
+ *
+ * 初回ベースライン化 (SPEC §12 の page 側原則を feed 側にも適用):
+ * monitor の初回チェック (ctx.monitor.lastCheckedAt === null) では、発見した URL を Target として
+ * 全件 upsert するが Change は一切作らない (baseline 確立のみ)。sitemap-index の親経由で最初に
+ * 監視を始めた場合、既存の全 URL がその瞬間 "新規" に見えてしまい、初回だけで数千件の 'new' Change /
+ * 通知が生成される実障害 (Workers 実行時間/サブリクエスト上限超過→ check_job が 'running' のまま
+ * デッドロック) が起きたための対策。ctx.monitor は runMonitorCheck 冒頭で一度読み込まれたきりで
+ * lastCheckedAt はチェック中に書き換わらない (setMonitorLastChecked は finishJob 内、feed 処理の後に
+ * 呼ばれる) ため、この判定はチェック全体を通じて安定している。
+ *
+ * URL 処理上限 (MAX_FEED_ITEMS_PER_CHECK, 既定 2000):
+ * 1回の processFeedItems 呼び出しで処理する item 数を上限で打ち切る (silent truncation 禁止,
+ * ADR-0005 Guardrail 「Attempt数とコストに上限」の精神)。上限は baseline チェックでも変更検知
+ * チェックでも同じ値を使う。baseline 中に上限超過で処理されなかった URL は、次回チェックで改めて
+ * "新規" として現れる — その時点では baseline を終えている (lastCheckedAt が非 null) ため、
+ * それらの残り分は 'new' Change として検知・通知される。1つの sitemap の残余 URL 数を数回の
+ * チェックに分割して吸収する設計として意図的に許容している (上限を十分大きくすることで実質
+ * 1サイトを1〜数回のチェックで吸収できる想定)。
  */
 import { parseSource } from '../adapters';
 import { AdapterParseError } from '../adapters/errors';
@@ -22,6 +44,7 @@ import {
   listMatchingSubscriptions,
   upsertTarget,
   setTargetLastChecked,
+  setTargetLastKnownUpdatedAt,
   getLatestSnapshotForTarget,
   getRobotsMode,
   type ChangeRow,
@@ -35,12 +58,36 @@ import type { CheckContext } from './types';
 /** Sitemap Index 配下の子 Sitemap の取得上限 (1回のチェックあたり) */
 export const MAX_CHILD_SITEMAPS = 20;
 
-async function targetExists(db: D1Database, monitorId: string, url: string): Promise<boolean> {
+/**
+ * processFeedItems 1回の呼び出しで処理する item (URL) 数の既定上限。
+ * sitemap-index の子 sitemap 1つに数千 URL が含まれるケース (実障害: www.hira2.jp で
+ * 5,183件を1回で処理し Workers の実行時間/サブリクエスト上限を超過) に対するガード。
+ * 呼び出し側 (processFeedItems の第3引数) で上書き可能 — テストで小さい値を注入するため。
+ */
+export const MAX_FEED_ITEMS_PER_CHECK = 2000;
+
+interface ExistingTargetWatermark {
+  exists: boolean;
+  /** upsertTarget を呼ぶ前の (=このチェックで item.updatedAt を書き込む前の) watermark 値 */
+  lastKnownUpdatedAt: string | null;
+}
+
+/**
+ * 既存 Target の有無と、upsert 前時点の last_known_updated_at watermark を1クエリで取得する。
+ * isNew 判定と 'updated' Change 判定 (watermark との比較) の両方に使う (migrations/0005)。
+ */
+async function getExistingTargetWatermark(
+  db: D1Database,
+  monitorId: string,
+  url: string,
+): Promise<ExistingTargetWatermark> {
   const row = await db
-    .prepare(`SELECT 1 FROM targets WHERE monitor_id = ? AND url = ? LIMIT 1`)
+    .prepare(`SELECT last_known_updated_at FROM targets WHERE monitor_id = ? AND url = ? LIMIT 1`)
     .bind(monitorId, url)
-    .first();
-  return row !== null;
+    .first<{ last_known_updated_at: string | null }>();
+  return row
+    ? { exists: true, lastKnownUpdatedAt: row.last_known_updated_at ?? null }
+    : { exists: false, lastKnownUpdatedAt: null };
 }
 
 /**
@@ -65,11 +112,36 @@ async function notifyForChange(ctx: CheckContext, change: ChangeRow): Promise<vo
   }
 }
 
-/** rss/atom/sitemap の item 一覧を Target 化し、新規/更新を検出して通知する */
-export async function processFeedItems(ctx: CheckContext, items: FeedItem[]): Promise<void> {
+/**
+ * rss/atom/sitemap の item 一覧を Target 化し、新規/更新を検出して通知する。
+ *
+ * @param maxItems 1回の呼び出しで処理する item 数の上限 (既定 MAX_FEED_ITEMS_PER_CHECK)。
+ *   超過分はスキップし (target/change を作らない)、次回以降のチェックに持ち越される。
+ *   テストで小さい値を注入できるよう引数化している。
+ */
+export async function processFeedItems(
+  ctx: CheckContext,
+  items: FeedItem[],
+  maxItems: number = MAX_FEED_ITEMS_PER_CHECK,
+): Promise<void> {
   const nowIso = new Date(ctx.now()).toISOString();
 
-  for (const item of items) {
+  // monitor の初回チェックか否か。ctx.monitor は runMonitorCheck 冒頭で読み込まれた
+  // スナップショットで、lastCheckedAt はこのチェック中に更新されない (setMonitorLastChecked は
+  // finishJob 内、feed 処理より後に呼ばれる) ため、この判定はチェック全体を通じて安定する。
+  const isBaselineCheck = ctx.monitor.lastCheckedAt === null;
+
+  const truncated = items.length > maxItems;
+  const toProcess = truncated ? items.slice(0, maxItems) : items;
+  if (truncated) {
+    console.warn(
+      `[feed] processFeedItems: monitor=${ctx.monitor.id} item count ${items.length} exceeds ` +
+        `maxItems=${maxItems}; processing first ${toProcess.length}, skipping ${items.length - toProcess.length} ` +
+        `(carried over to a future check)`,
+    );
+  }
+
+  for (const item of toProcess) {
     // FeedItem.url が無い entry は Target (UNIQUE(monitor_id, url)) を作れないためスキップする。
     if (!item.url) continue;
 
@@ -80,13 +152,23 @@ export async function processFeedItems(ctx: CheckContext, items: FeedItem[]): Pr
     const itemSsrf = checkUrlForSsrf(item.url);
     if (!itemSsrf.allowed) continue;
 
-    const isNew = !(await targetExists(ctx.db, ctx.monitor.id, item.url));
+    const previous = await getExistingTargetWatermark(ctx.db, ctx.monitor.id, item.url);
+    const isNew = !previous.exists;
     const target = await upsertTarget(ctx.db, {
       monitorId: ctx.monitor.id,
       url: item.url,
       discoveredFrom: item.stableKey,
+      // 新規 Target のみ item.updatedAt を初期 watermark として記録する (baseline チェックでの
+      // 基準値確定を含む)。既存 Target の watermark はここでは触らない — 'updated' Change の
+      // 検出・通知試行が完了した後にのみ進める (下記コメント参照。crash 後の at-least-once
+      // 復旧を壊さないため)。
+      lastKnownUpdatedAt: isNew ? item.updatedAt : undefined,
     });
     await setTargetLastChecked(ctx.db, target.id, nowIso);
+
+    // 初回チェックは baseline 確立のみ: Target は登録するが Change は一切作らない
+    // (SPEC §12 の page 初回 snapshot 原則を feed 側にも適用)。
+    if (isBaselineCheck) continue;
 
     if (isNew) {
       const inserted = await insertChangeIfNew(ctx.db, {
@@ -104,8 +186,14 @@ export async function processFeedItems(ctx: CheckContext, items: FeedItem[]): Pr
     }
 
     // 既存 Target: updatedAt が確認できる Source (atom/sitemap) のみ 'updated' を検出できる。
-    // dedupeKey に updatedAt を含めることで、同じ値の再チェックは自動的に no-op になる。
-    if (item.updatedAt) {
+    // 判定は Target の watermark (last_known_updated_at, upsertTarget 呼び出し前の値) との
+    // 直接比較で行う — Change テーブルの dedupeKey 存在有無だけに頼ると、baseline チェックは
+    // Change を一切作らないため、baseline 後の最初の非baselineチェックで「lastmod が変わって
+    // いない既存 URL 全部」が dedupeKey 未見扱いになり 'updated' が誤って大量発火してしまう
+    // (migrations/0005_target_updated_watermark.sql で追加した watermark 列により解消)。
+    // dedupeKey に updatedAt を含めることも維持し、同じ値の再チェックが万一発生しても no-op になる
+    // 保険 (at-least-once 復旧) を残す。
+    if (item.updatedAt && item.updatedAt !== previous.lastKnownUpdatedAt) {
       const inserted = await insertChangeIfNew(ctx.db, {
         monitorId: ctx.monitor.id,
         targetId: target.id,
@@ -117,6 +205,11 @@ export async function processFeedItems(ctx: CheckContext, items: FeedItem[]): Pr
       });
       await notifyForChange(ctx, inserted.row);
       if (inserted.inserted) ctx.changeIds.push(inserted.row.id);
+      // watermark は Change 挿入 (dedupeKey 重複による recovery を含む) + 通知試行の後にのみ進める。
+      // ここより前に (例えば upsertTarget 呼び出し時点で) 無条件に進めてしまうと、Change 挿入後・
+      // 通知完了前にクラッシュした場合の再試行が「既に処理済み」と誤認され、at-least-once 復旧
+      // (notifyForChange の再試行) が働かなくなってしまう。
+      await setTargetLastKnownUpdatedAt(ctx.db, target.id, item.updatedAt);
     }
   }
 }

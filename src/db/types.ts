@@ -125,6 +125,13 @@ export interface TargetRow {
   discoveredFrom: string | null;
   firstSeenAt: string;
   lastCheckedAt: string | null;
+  /**
+   * feed/sitemap item の最後に観測した updatedAt (lastmod/atom updated) の watermark。
+   * 'updated' Change の生成可否を、Change テーブルの dedupeKey 存在有無ではなくこの値との
+   * 直接比較で判定するために使う (migrations/0005_target_updated_watermark.sql)。
+   * updatedAt を持たない Source (rss 等) や、まだ観測が無い場合は null。
+   */
+  lastKnownUpdatedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -135,6 +142,8 @@ export interface CreateTargetInput {
   url: string;
   discoveredFrom?: string | null;
   firstSeenAt?: string;
+  /** upsert 時に item.updatedAt を watermark として記録したい場合に渡す (省略時は更新しない) */
+  lastKnownUpdatedAt?: string | null;
 }
 
 export interface CheckJobRow {
