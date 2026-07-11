@@ -39,7 +39,10 @@
     "crons": ["*/5 * * * *"]
   },
   "vars": {
-    "USER_AGENT": "UtsuroiBot/0.1 (+https://github.com/ochanuco/utsuroi)"
+    // bot UA だと WAF に 503 で弾かれるサイト (SUUMO 等) があるため、当面はブラウザ相当の
+    // UA を全 fetch 共通で使う。robots.txt 評価も同じ UA で行うため '*' グループにマッチする
+    // (bot 専用グループでの Allow/Disallow は拾わなくなる)。site/source 単位の UA 設定は将来課題。
+    "USER_AGENT": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
   },
   "assets": {
     "directory": "./public",
