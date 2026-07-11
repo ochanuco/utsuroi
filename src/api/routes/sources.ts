@@ -21,12 +21,32 @@ import { badRequest, conflict, notFound } from '../errors';
 import { parsePagination, parseWith, readJsonBody } from '../http';
 import { serializeSource } from '../serialize';
 
-// ADR-0010 Phase B: sitemap / sitemap-index Source のみ config を受け付ける (他typeは400)。
+// ADR-0010 Phase B (sitemap系) + ADR-0011 (page系) の config を1つのスキーマで受け付ける。
+// どのキーがどの type に適用可能かは type別に分離してルートハンドラ側で検証する
+// (SITEMAP_ONLY_CONFIG_KEYS / PAGE_ONLY_CONFIG_KEYS 参照) — zod の discriminated union で
+// type ごとに別スキーマに分けると、type 自体のバリデーションエラーと config_not_applicable の
+// 400 を作り分けにくくなるため (前者は invalid type 400、後者は「type と config の組み合わせ」
+// 400 であり、意味の異なるエラーを明確に区別したい)。
+const extractConfigSchema = z
+  .object({
+    item_selector: z.string().min(1),
+    link_selector: z.string().min(1).optional(),
+    title_selector: z.string().min(1).optional(),
+  })
+  .strict();
+
 const sourceConfigSchema = z
   .object({
+    // sitemap / sitemap-index 専用 (ADR-0010 Phase B)
     sitemap_mode: z.enum(['direct', 'traverse']).optional(),
     lastmod_max_age_days: z.number().int().min(1).max(30).optional(),
     max_depth: z.number().int().min(1).max(5).optional(),
+    // page 専用 (ADR-0011 + 既存の normalize オプション)
+    page_mode: z.enum(['content', 'extract']).optional(),
+    extract: extractConfigSchema.optional(),
+    ignore_selectors: z.array(z.string().min(1)).optional(),
+    include_selectors: z.array(z.string().min(1)).optional(),
+    strip_query_params: z.array(z.string().min(1)).optional(),
   })
   .strict()
   .optional();
@@ -38,13 +58,65 @@ const createSourceSchema = z.object({
   config: sourceConfigSchema,
 });
 
+type SourceConfigInput = NonNullable<z.infer<typeof createSourceSchema>['config']>;
+
+/** sitemap/sitemap-index にのみ適用可能な config キー (ADR-0010 Phase B) */
+const SITEMAP_ONLY_CONFIG_KEYS: Array<keyof SourceConfigInput> = [
+  'sitemap_mode',
+  'lastmod_max_age_days',
+  'max_depth',
+];
+/** page にのみ適用可能な config キー (ADR-0011 + 既存の normalize オプション) */
+const PAGE_ONLY_CONFIG_KEYS: Array<keyof SourceConfigInput> = [
+  'page_mode',
+  'extract',
+  'ignore_selectors',
+  'include_selectors',
+  'strip_query_params',
+];
+
+/** config に含まれるキーのうち、渡された許可リストに含まれない (=type非対応の) キー名を返す */
+function findConfigNotApplicableKeys(
+  config: SourceConfigInput,
+  allowedKeys: Array<keyof SourceConfigInput>,
+): string[] {
+  const allowed = new Set(allowedKeys);
+  return Object.keys(config).filter((key) => !allowed.has(key as keyof SourceConfigInput));
+}
+
+/**
+ * extract.item_selector が lol-html のセレクタとしてパース可能かを検証する。
+ * new HTMLRewriter().on(selector, handlers) は不正なセレクタに対して同期的に throw する
+ * (workerd 実測、docs/adr/0011-page-item-extraction.md 参照)。ハンドラは実行されないため
+ * 空オブジェクトで十分。
+ */
+function isValidRewriterSelector(selector: string): boolean {
+  try {
+    new HTMLRewriter().on(selector, {});
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** snake_case (API入力) -> camelCase (SourceConfig) */
-function toSourceConfig(input: z.infer<typeof createSourceSchema>['config']): SourceConfig | undefined {
+function toSourceConfig(input: SourceConfigInput | undefined): SourceConfig | undefined {
   if (!input) return undefined;
   const config: SourceConfig = {};
   if (input.sitemap_mode !== undefined) config.sitemapMode = input.sitemap_mode;
   if (input.lastmod_max_age_days !== undefined) config.lastmodMaxAgeDays = input.lastmod_max_age_days;
   if (input.max_depth !== undefined) config.maxDepth = input.max_depth;
+  if (input.page_mode !== undefined) config.pageMode = input.page_mode;
+  if (input.extract !== undefined) {
+    config.extract = {
+      itemSelector: input.extract.item_selector,
+      ...(input.extract.link_selector !== undefined ? { linkSelector: input.extract.link_selector } : {}),
+      ...(input.extract.title_selector !== undefined ? { titleSelector: input.extract.title_selector } : {}),
+    };
+  }
+  if (input.ignore_selectors !== undefined) config.ignoreSelectors = input.ignore_selectors;
+  if (input.include_selectors !== undefined) config.includeSelectors = input.include_selectors;
+  if (input.strip_query_params !== undefined) config.stripQueryParams = input.strip_query_params;
   return config;
 }
 
@@ -67,8 +139,37 @@ export function sourcesRoutes(opts: { ssrfResolver?: DnsResolver } = {}) {
       throw badRequest('ssrf_blocked', `url rejected by SSRF check: ${resolvedCheck.reason}`);
     }
 
-    if (body.config && body.type !== 'sitemap' && body.type !== 'sitemap-index') {
-      throw badRequest('config_not_applicable', 'config is only applicable to sitemap/sitemap-index sources');
+    if (body.config) {
+      if (body.type === 'sitemap' || body.type === 'sitemap-index') {
+        const badKeys = findConfigNotApplicableKeys(body.config, SITEMAP_ONLY_CONFIG_KEYS);
+        if (badKeys.length > 0) {
+          throw badRequest(
+            'config_not_applicable',
+            `config key(s) not applicable to ${body.type} sources: ${badKeys.join(', ')}`,
+          );
+        }
+      } else if (body.type === 'page') {
+        const badKeys = findConfigNotApplicableKeys(body.config, PAGE_ONLY_CONFIG_KEYS);
+        if (badKeys.length > 0) {
+          throw badRequest(
+            'config_not_applicable',
+            `config key(s) not applicable to page sources: ${badKeys.join(', ')}`,
+          );
+        }
+      } else {
+        // rss/atom は config を一切受け付けない (従来どおり)。
+        throw badRequest(
+          'config_not_applicable',
+          `config is not applicable to ${body.type} sources`,
+        );
+      }
+    }
+
+    if (body.type === 'page' && body.config?.page_mode === 'extract' && !body.config.extract?.item_selector) {
+      throw badRequest('invalid_selector', 'extract.item_selector is required when page_mode is "extract"');
+    }
+    if (body.config?.extract?.item_selector && !isValidRewriterSelector(body.config.extract.item_selector)) {
+      throw badRequest('invalid_selector', `extract.item_selector is not a valid selector: ${body.config.extract.item_selector}`);
     }
 
     const source = await createSource(c.env.DB, {

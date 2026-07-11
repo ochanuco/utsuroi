@@ -51,6 +51,14 @@ const SOURCE_TYPES = ['page', 'rss', 'atom', 'sitemap', 'sitemap-index'];
  */
 const SITEMAP_MODE_LABELS = { direct: '一覧差分', traverse: '新着検知' };
 
+/**
+ * page系の監視モードのUI表示名 (ADR-0011: 本文差分 = 既定の processPageContent、
+ * 新着検知 = config.page_mode==='extract' の processPageItems によるアイテム抽出)。
+ * API/DBの値は 'content' | 'extract' のまま変えない。sitemap系の2連メニューと同じ位置に
+ * 表示する (typeSelect の値に応じてメニューの選択肢そのものを差し替える)。
+ */
+const PAGE_MODE_LABELS = { content: '本文差分', extract: '新着検知' };
+
 // --- Sources (+ 監視状態の統合表示) -------------------------------------------
 //
 // 実運用ではMonitor:Source≒1:1のため、UIからMonitorという別概念を隠し、各Sourceカードに
@@ -272,6 +280,13 @@ function renderSourceCard(source, monitorsForSource, monitorsFetchFailed, onSour
         text: isTraverse ? SITEMAP_MODE_LABELS.traverse : SITEMAP_MODE_LABELS.direct,
       })
     );
+  } else if (source.type === 'page') {
+    // page の既定 (本文差分) は現行表示を維持しバッジを出さない。新着検知
+    // (config.page_mode==='extract', ADR-0011) のときだけ明示する (badge-mode-traverse を流用)。
+    const isExtract = source.config && source.config.page_mode === 'extract';
+    if (isExtract) {
+      headerChildren.push(el('span', { class: 'badge badge-mode-traverse', text: PAGE_MODE_LABELS.extract }));
+    }
   }
   headerChildren.push(el('span', { class: 'source-card-url', text: source.url }));
   card.appendChild(el('div', { class: 'source-card-header' }, headerChildren));
@@ -316,24 +331,61 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
     attrs: { type: 'number', min: 1, step: 1, placeholder: '例: 60' },
   });
 
-  // sitemap系のときだけ種別のすぐ隣に現れるモード選択 (2連メニュー)。別行に置くと
-  // 見落とされるため、種別と同じ行に隣接配置する。数値設定 (lastmod_max_age_days /
-  // max_depth) はAPI専用でUIは提供しない。
-  const modeSelect = el(
-    'select',
-    {},
-    ['direct', 'traverse'].map((m) => el('option', { attrs: { value: m }, text: SITEMAP_MODE_LABELS[m] }))
-  );
+  // sitemap系・page系のときだけ種別のすぐ隣に現れるモード選択 (2連メニュー)。別行に置くと
+  // 見落とされるため、種別と同じ行に隣接配置する。type によって選択肢そのものが変わる
+  // (sitemap系: 一覧差分/新着検知 = direct/traverse、page: 本文差分/新着検知 = content/extract)。
+  // 数値設定 (lastmod_max_age_days/max_depth) や page の link_selector/title_selector・
+  // ignore_selectors/include_selectors はAPI専用でUIは提供しない。
+  const modeSelect = el('select', {});
   const modeField = field('モード', modeSelect);
   modeField.classList.add('hidden');
+
+  // page × 新着検知 のときだけ表示する、アイテムセレクタのテキスト入力 (ADR-0011)。
+  const itemSelectorInput = el('input', {
+    attrs: { type: 'text', placeholder: '.property_unit' },
+  });
+  const itemSelectorField = field('アイテムセレクタ', itemSelectorInput);
+  itemSelectorField.classList.add('hidden');
 
   function isSitemapType(type) {
     return type === 'sitemap' || type === 'sitemap-index';
   }
+  function isPageType(type) {
+    return type === 'page';
+  }
+  /** typeSelect.value に応じたモード選択肢 (値 + 表示ラベル)。sitemap/page 以外は null (メニュー非表示) */
+  function modeOptionsForType(type) {
+    if (isSitemapType(type)) return { values: ['direct', 'traverse'], labels: SITEMAP_MODE_LABELS };
+    if (isPageType(type)) return { values: ['content', 'extract'], labels: PAGE_MODE_LABELS };
+    return null;
+  }
+
+  /** type 変更時: モード選択肢そのものを type に応じて作り直す (sitemap系/page で語彙が異なるため) */
+  function rebuildModeOptions() {
+    const opts = modeOptionsForType(typeSelect.value);
+    while (modeSelect.firstChild) modeSelect.removeChild(modeSelect.firstChild);
+    if (!opts) {
+      modeField.classList.add('hidden');
+      return;
+    }
+    for (const value of opts.values) {
+      modeSelect.appendChild(el('option', { attrs: { value }, text: opts.labels[value] }));
+    }
+    modeField.classList.remove('hidden');
+  }
+
+  /** page × 新着検知 (modeSelect.value === 'extract') のときだけアイテムセレクタ入力を表示する */
+  function syncItemSelectorVisibility() {
+    const show = isPageType(typeSelect.value) && modeSelect.value === 'extract';
+    itemSelectorField.classList.toggle('hidden', !show);
+  }
+
   function syncModeVisibility() {
-    modeField.classList.toggle('hidden', !isSitemapType(typeSelect.value));
+    rebuildModeOptions();
+    syncItemSelectorVisibility();
   }
   typeSelect.addEventListener('change', syncModeVisibility);
+  modeSelect.addEventListener('change', syncItemSelectorVisibility);
   syncModeVisibility();
 
   const errorEl = el('p', { class: 'error hidden' });
@@ -350,6 +402,14 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
         const sourceBody = { site_id: siteId, type: typeSelect.value, url };
         if (isSitemapType(typeSelect.value) && modeSelect.value === 'traverse') {
           sourceBody.config = { sitemap_mode: 'traverse' };
+        } else if (isPageType(typeSelect.value) && modeSelect.value === 'extract') {
+          const itemSelector = itemSelectorInput.value.trim();
+          if (!itemSelector) {
+            errorEl.textContent = 'アイテムセレクタを入力してください。';
+            errorEl.classList.remove('hidden');
+            return;
+          }
+          sourceBody.config = { page_mode: 'extract', extract: { item_selector: itemSelector } };
         }
 
         let source;
@@ -391,6 +451,7 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
 
         urlInput.value = '';
         intervalInput.value = '';
+        itemSelectorInput.value = '';
         try {
           await onSourcesChanged();
         } catch (err) {
@@ -403,7 +464,13 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
   const urlField = field('URL', urlInput);
   urlField.classList.add('field-grow'); // URL列を優先的に広げる (style.css .field-grow)
   form.appendChild(
-    fieldRow([field('種別', typeSelect), modeField, urlField, field('監視間隔 (分・空欄なら監視なし)', intervalInput)])
+    fieldRow([
+      field('種別', typeSelect),
+      modeField,
+      itemSelectorField,
+      urlField,
+      field('監視間隔 (分・空欄なら監視なし)', intervalInput),
+    ])
   );
   form.appendChild(el('button', { attrs: { type: 'submit' }, text: 'Sourceを追加' }));
   form.appendChild(errorEl);
