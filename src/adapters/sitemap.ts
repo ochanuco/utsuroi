@@ -37,12 +37,20 @@ export function buildSitemapResult(
   return { kind: 'sitemap', items, childSitemaps: [], meta: { title: null } };
 }
 
-/** すでにパース済みの <sitemapindex> ノードから AdapterParseResult を組み立てる */
+/**
+ * すでにパース済みの <sitemapindex> ノードから AdapterParseResult を組み立てる。
+ *
+ * childSitemaps (string[]) は後方互換のため維持する (Phase B の子Sitemap再帰展開で使う、
+ * ADR-0010 モードB)。加えて buildSitemapResult (urlset) と対称になるよう、子Sitemapの
+ * loc+lastmod を items にも入れる (ADR-0010 Phase A の Sitemap Direct が sitemap-index を
+ * 監視する際、urlset と同じ「items の loc+lastmod 集合」を差分対象ドキュメントにするため)。
+ */
 export function buildSitemapIndexResult(
   sitemapindex: Record<string, unknown>,
   opts: { baseUrl: string },
 ): AdapterParseResult {
   const childSitemaps: string[] = [];
+  const items: FeedItem[] = [];
   const seen = new Set<string>();
 
   for (const raw of asArray(sitemapindex.sitemap)) {
@@ -54,9 +62,19 @@ export function buildSitemapIndexResult(
     if (seen.has(loc)) continue;
     seen.add(loc);
     childSitemaps.push(loc);
+
+    const lastmodRaw = textOf(node.lastmod);
+    items.push({
+      stableKey: loc,
+      url: loc,
+      title: null,
+      publishedAt: null,
+      updatedAt: lastmodRaw ? normalizeIsoDate(lastmodRaw) : null,
+      summary: null,
+    });
   }
 
-  return { kind: 'sitemap-index', items: [], childSitemaps, meta: { title: null } };
+  return { kind: 'sitemap-index', items, childSitemaps, meta: { title: null } };
 }
 
 /** Sitemap (urlset) をパースする。ルート要素が異なる場合は throw する */

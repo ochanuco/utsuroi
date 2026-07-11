@@ -30,6 +30,7 @@ import { createD1RobotsCache } from './robotsCache';
 import { fetchTargetThroughPolicy } from './fetchTarget';
 import { processPageContent } from './pageContent';
 import { processFeedContent } from './feed';
+import { processSitemapDirect } from './sitemapDirect';
 import { hostLimiterFactory } from '../do/hostObject';
 import type { CheckContext, CheckRunResult, RunMonitorCheckOptions } from './types';
 
@@ -225,8 +226,15 @@ export async function runMonitorCheck(
       }
 
       // 7. Source 種別ごとの内容処理
+      // sitemap/sitemap-index は既定で Sitemap Direct (ADR-0010 Phase A):
+      // 指定した1つの sitemap の URL集合を1ドキュメントとして snapshot+diff する。
+      // 子を辿らない・個々のURLをTarget化しない (旧 processFeedContent の子展開は
+      // rss/atom からしか呼ばれなくなり、sitemap-index 経路では実質使われない
+      // — 削除はせず Phase B の lastmodベース探索で再利用する)。
       if (source.type === 'page') {
         await processPageContent(ctx, target, latestSnapshot, lastAttemptId, outcome as FetchSuccess, outcome.body);
+      } else if (source.type === 'sitemap' || source.type === 'sitemap-index') {
+        await processSitemapDirect(ctx, target, latestSnapshot, lastAttemptId, outcome as FetchSuccess, outcome.body);
       } else {
         await processFeedContent(ctx, target, lastAttemptId, outcome as FetchSuccess, outcome.body);
       }
