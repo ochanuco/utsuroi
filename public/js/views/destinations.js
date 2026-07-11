@@ -7,7 +7,7 @@ import { el, clear, section, field, fieldRow, formatDateTime, renderLoading, ren
 
 const KIND_OPTIONS = ['', 'new', 'updated', 'removed'];
 
-async function renderSubscriptionsFor(container, destinationId, sites) {
+async function renderSubscriptionsFor(container, destinationId, sites, archived) {
   renderLoading(container);
   const data = await api.get(`/subscriptions?destination_id=${encodeURIComponent(destinationId)}&limit=200`);
   clear(container);
@@ -35,7 +35,7 @@ async function renderSubscriptionsFor(container, destinationId, sites) {
             if (!confirm('この購読を削除しますか?')) return;
             try {
               await api.del(`/subscriptions/${encodeURIComponent(sub.id)}`);
-              await renderSubscriptionsFor(container, destinationId, sites);
+              await renderSubscriptionsFor(container, destinationId, sites, archived);
             } catch (err) {
               alert(`削除に失敗しました: ${err.message}`);
             }
@@ -58,6 +58,13 @@ async function renderSubscriptionsFor(container, destinationId, sites) {
     if (notice) container.appendChild(notice);
   } else {
     container.appendChild(el('p', { class: 'empty', text: '購読はまだありません。' }));
+  }
+
+  if (archived) {
+    // ADR-0012: アーカイブ済み Destination への新規購読作成は API 側でも 400 拒否されるため、
+    // UI 側でもフォーム自体を表示しない (購読作成の選択肢からアーカイブ済みを除外する)。
+    container.appendChild(el('p', { class: 'muted', text: 'アーカイブ済みのため、新規購読は作成できません。' }));
+    return;
   }
 
   const siteSelect = el('select', {}, [
@@ -94,7 +101,7 @@ async function renderSubscriptionsFor(container, destinationId, sites) {
         monitorIdInput.value = '';
         tagInput.value = '';
         try {
-          await renderSubscriptionsFor(container, destinationId, sites);
+          await renderSubscriptionsFor(container, destinationId, sites, archived);
         } catch (reloadErr) {
           // 作成自体は成功しているため、一覧再取得の失敗は別扱いで表示する
           // (renderSubscriptionsForは失敗時にcontainerをloading表示のまま残すため、
@@ -124,31 +131,53 @@ async function renderDestinationsList(container, sites) {
   }
 
   for (const destination of data.items) {
+    const archived = destination.archived_at != null;
     const box = el('div', { class: 'section' });
     const header = el('div', { class: 'section-header' });
     header.appendChild(
       el('div', {}, [
         el('strong', { text: destination.name }),
-        el('span', { class: 'muted', text: ` ${destination.webhook_url_masked}` }),
+        el('span', { class: 'muted', text: ` ${destination.webhook_url_masked ?? '(webhook破棄済み)'}` }),
         el('span', { class: 'muted', text: destination.enabled ? ' [有効]' : ' [無効]' }),
-      ])
+        archived ? el('span', { class: 'muted', text: ' [アーカイブ済み]' }) : null,
+      ].filter(Boolean))
     );
-    const deleteButton = el('button', {
-      class: 'button-danger',
-      text: 'Destinationを削除',
-      on: {
-        click: async () => {
-          if (!confirm(`Destination "${destination.name}" を削除しますか?`)) return;
-          try {
-            await api.del(`/destinations/${encodeURIComponent(destination.id)}`);
-            await renderDestinationsList(container, sites);
-          } catch (err) {
-            alert(`削除に失敗しました: ${err.message} (配送履歴が残っている場合は削除できません)`);
-          }
+    if (archived) {
+      // アーカイブ済みは webhook を既に破棄しており、復元も再削除もできない (ADR-0012)。
+      // 削除ボタンは表示しない。
+    } else {
+      const archiveButton = el('button', {
+        text: 'アーカイブ',
+        on: {
+          click: async () => {
+            if (!confirm(`Destination "${destination.name}" をアーカイブしますか? webhookは破棄され復元できません。`)) return;
+            try {
+              await api.post(`/destinations/${encodeURIComponent(destination.id)}/archive`, {});
+              await renderDestinationsList(container, sites);
+            } catch (err) {
+              alert(`アーカイブに失敗しました: ${err.message}`);
+            }
+          },
         },
-      },
-    });
-    header.appendChild(deleteButton);
+      });
+      const deleteButton = el('button', {
+        class: 'button-danger',
+        text: 'Destinationを削除',
+        on: {
+          click: async () => {
+            if (!confirm(`Destination "${destination.name}" を削除しますか?`)) return;
+            try {
+              await api.del(`/destinations/${encodeURIComponent(destination.id)}`);
+              await renderDestinationsList(container, sites);
+            } catch (err) {
+              alert(`削除に失敗しました: ${err.message} (配送履歴が残っている場合は削除できません。アーカイブをお試しください)`);
+            }
+          },
+        },
+      });
+      header.appendChild(archiveButton);
+      header.appendChild(deleteButton);
+    }
     box.appendChild(header);
     box.appendChild(el('p', { class: 'muted', text: `作成日時: ${formatDateTime(destination.created_at)}` }));
 
@@ -158,7 +187,7 @@ async function renderDestinationsList(container, sites) {
     container.appendChild(box);
 
     try {
-      await renderSubscriptionsFor(subsContainer, destination.id, sites);
+      await renderSubscriptionsFor(subsContainer, destination.id, sites, archived);
     } catch (err) {
       renderError(subsContainer, err);
     }

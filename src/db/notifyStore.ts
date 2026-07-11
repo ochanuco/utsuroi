@@ -16,6 +16,7 @@ interface PendingDeliveryQueryRow {
   delivery_status: string;
   attempt_count: number;
   webhook_url: string;
+  destination_archived_at: string | null;
   change_id: string;
   kind: ChangeKind;
   source_type: SourceType;
@@ -42,6 +43,7 @@ interface PendingDeliveryQueryRow {
  * - 既に 'delivered' 済み
  * - 'dead' (再試行を諦めた) 状態
  * - 他の呼び出しが既に claim 済み (status='sending' かつ claimed_at が stale でない)
+ * - claim 対象の Destination がアーカイブ済み (ADR-0012, claim 後に 'dead' へ倒して返す)
  */
 export function createD1NotifyStore(db: D1Database, webhookEncKey: string | undefined): NotifyStore {
   return {
@@ -76,6 +78,7 @@ export function createD1NotifyStore(db: D1Database, webhookEncKey: string | unde
              d.status AS delivery_status,
              d.attempt_count AS attempt_count,
              dest.webhook_url AS webhook_url,
+             dest.archived_at AS destination_archived_at,
              c.id AS change_id,
              c.kind AS kind,
              c.monitor_id AS monitor_id,
@@ -98,6 +101,15 @@ export function createD1NotifyStore(db: D1Database, webhookEncKey: string | unde
 
       // claim (UPDATE) が成功した直後なので理論上 null にはならないが、防御的に扱う。
       if (!row) return null;
+
+      // アーカイブ済み Destination (ADR-0012) の delivery: アーカイブ操作は webhook_url を
+      // 破棄しているため復号を試みても無意味 (かつ空文字の復号は失敗する)。アーカイブ前に
+      // enqueue 済みだった NOTIFY_QUEUE メッセージ対策として、claim 済みの delivery を
+      // 'dead' に倒して null を返す (再試行させない)。
+      if (row.destination_archived_at !== null) {
+        await markDeliveryFailed(db, deliveryId, 'destination archived', { dead: true });
+        return null;
+      }
 
       const webhookUrl = await decryptWebhookUrl(row.webhook_url, webhookEncKey);
 

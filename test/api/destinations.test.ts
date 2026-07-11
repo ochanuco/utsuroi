@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDeliveryIfNew, insertChangeIfNew } from '../../src/db';
+import { createDeliveryIfNew, insertChangeIfNew, listAuditEventsBySubject } from '../../src/db';
 import { buildFixture } from '../db/helpers';
 import { authHeaders, buildTestApp, db, jsonHeaders, testEnv, uniqueName } from './helpers';
 
@@ -193,5 +193,120 @@ describe('POST/GET /api/destinations (webhook masking)', () => {
     // history が残っているため destination 自体は消えていないこと
     const getRes = await app.request(`/api/destinations/${fixture.destination.id}`, { headers: authHeaders() }, testEnv());
     expect(getRes.status).toBe(200);
+  });
+
+  it('DELETE 409 message guides callers to the archive endpoint instead', async () => {
+    const { app } = buildTestApp();
+    const fixture = await buildFixture(db());
+    const change = await insertChangeIfNew(db(), {
+      monitorId: fixture.monitor.id,
+      targetId: fixture.target.id,
+      targetUrl: fixture.target.url,
+      kind: 'new',
+      dedupeKey: uniqueName('dedupe-409-msg'),
+      detectedAt: new Date().toISOString(),
+    });
+    await createDeliveryIfNew(db(), change.row.id, fixture.destination.id);
+
+    const res = await app.request(
+      `/api/destinations/${fixture.destination.id}`,
+      { method: 'DELETE', headers: authHeaders() },
+      testEnv()
+    );
+    expect(res.status).toBe(409);
+    const body = await res.json() as any;
+    expect(body.error.message).toContain('archive');
+    expect(body.error.message).toContain(`/api/destinations/${fixture.destination.id}/archive`);
+  });
+});
+
+describe('POST /api/destinations/:id/archive (ADR-0012: soft delete)', () => {
+  it('archives a destination: sets archived_at, discards the webhook, deletes subscriptions, and records an audit event', async () => {
+    const { app } = buildTestApp();
+    const created = await (
+      await app.request(
+        '/api/destinations',
+        {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({ name: uniqueName('Archive Me'), webhook_url: 'https://discord.com/api/webhooks/9/archive1234' }),
+        },
+        testEnv()
+      )
+    ).json() as any;
+
+    const subRes = await app.request(
+      '/api/subscriptions',
+      { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ destination_id: created.id }) },
+      testEnv()
+    );
+    expect(subRes.status).toBe(201);
+    const subscription = await subRes.json() as any;
+
+    const archiveRes = await app.request(
+      `/api/destinations/${created.id}/archive`,
+      { method: 'POST', headers: authHeaders() },
+      testEnv()
+    );
+    expect(archiveRes.status).toBe(200);
+    const archived = await archiveRes.json() as any;
+    expect(archived.archived_at).toEqual(expect.any(String));
+    expect(archived.webhook_url_masked).toBeNull();
+    expect(archived.webhook_url).toBeUndefined();
+
+    // 従属 subscription が削除されている
+    const subListRes = await app.request(
+      `/api/subscriptions?destination_id=${created.id}`,
+      { headers: authHeaders() },
+      testEnv()
+    );
+    const subListBody = await subListRes.json() as any;
+    expect(subListBody.items.some((s: { id: string }) => s.id === subscription.id)).toBe(false);
+
+    // 監査イベントが記録されている
+    const events = await listAuditEventsBySubject(db(), created.id);
+    expect(events.some((e) => e.action === 'destination.archive')).toBe(true);
+  });
+
+  it('is idempotent: archiving an already-archived destination returns 200 without erroring', async () => {
+    const { app } = buildTestApp();
+    const created = await (
+      await app.request(
+        '/api/destinations',
+        {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({ name: uniqueName('Archive Twice'), webhook_url: 'https://discord.com/api/webhooks/9/archivetwice' }),
+        },
+        testEnv()
+      )
+    ).json() as any;
+
+    const first = await app.request(
+      `/api/destinations/${created.id}/archive`,
+      { method: 'POST', headers: authHeaders() },
+      testEnv()
+    );
+    expect(first.status).toBe(200);
+    const firstBody = await first.json() as any;
+
+    const second = await app.request(
+      `/api/destinations/${created.id}/archive`,
+      { method: 'POST', headers: authHeaders() },
+      testEnv()
+    );
+    expect(second.status).toBe(200);
+    const secondBody = await second.json() as any;
+    expect(secondBody.archived_at).toBe(firstBody.archived_at);
+  });
+
+  it('returns 404 when archiving an unknown destination', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request(
+      '/api/destinations/nope/archive',
+      { method: 'POST', headers: authHeaders() },
+      testEnv()
+    );
+    expect(res.status).toBe(404);
   });
 });
