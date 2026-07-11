@@ -14,9 +14,14 @@ function isRedirectStatus(status: number): boolean {
   return REDIRECT_STATUSES.has(status);
 }
 
+/** 全リクエスト共通で送る Accept-Language (日本語サイト優先)。 */
+const DEFAULT_ACCEPT_LANGUAGE = 'ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7';
+
 function buildRequestHeaders(req: FetchRequest): Headers {
   const headers = new Headers();
   headers.set('user-agent', req.userAgent);
+  headers.set('accept-language', DEFAULT_ACCEPT_LANGUAGE);
+  headers.set('referer', req.url);
   if (req.headers) {
     for (const [key, value] of Object.entries(req.headers)) {
       headers.set(key, value);
