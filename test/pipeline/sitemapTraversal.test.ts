@@ -402,6 +402,65 @@ describe('runMonitorCheck: Sitemap Traversal lastmod cutoff', () => {
     expect(targets.some((t) => t.url === 'https://example.com/posts/too-old')).toBe(false);
     expect(targets.some((t) => t.url === 'https://example.com/posts/no-lastmod')).toBe(false);
   });
+
+  it('never fetches or registers a child sitemap without lastmod (baseline and after), and does not record an audit event for it', async () => {
+    // lastmod の無い子は watermark ゲートが成立せず毎チェック無条件フェッチになってしまうため、
+    // selectChildEntries で traversal 対象から除外される (CodeRabbit round-2 指摘の回帰テスト)。
+    // 定常スキップ (missingLastmodSkipped) なので audit イベントも作られない。
+    const { monitor } = await buildPipelineFixture({
+      sourceType: 'sitemap-index',
+      sourceUrl: 'https://example.com/traverse-root-nolastmod.xml',
+      sourceConfig: { sitemapMode: 'traverse' },
+    });
+    const rootBody = (withLastmod: string) =>
+      sitemapIndexBody([
+        { loc: 'https://example.com/child-with-lastmod.xml', lastmod: withLastmod },
+        { loc: 'https://example.com/child-no-lastmod.xml' }, // lastmod無し
+      ]);
+    const routes = (withLastmod: string) => ({
+      [ROBOTS_ALLOW[0]]: ROBOTS_ALLOW[1],
+      'https://example.com/traverse-root-nolastmod.xml': () =>
+        new Response(rootBody(withLastmod), { status: 200, headers: { 'content-type': 'application/xml' } }),
+      'https://example.com/child-with-lastmod.xml': () =>
+        new Response(urlsetBody([{ loc: 'https://example.com/posts/w-1', lastmod: WITHIN_CUTOFF_B }]), {
+          status: 200,
+          headers: { 'content-type': 'application/xml' },
+        }),
+      'https://example.com/child-no-lastmod.xml': () =>
+        new Response(urlsetBody([{ loc: 'https://example.com/posts/n-1', lastmod: WITHIN_CUTOFF_B }]), {
+          status: 200,
+          headers: { 'content-type': 'application/xml' },
+        }),
+    });
+
+    // baseline + 2回目 (lastmod持ちの子だけ変化) の両方で、lastmod無しの子は一切フェッチされない。
+    const { fetch: baselineFetch, calls: baselineCalls } = trackingFetch(routedFetch(routes(WITHIN_CUTOFF_A)));
+    await runMonitorCheck(
+      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      monitor.id,
+      { fetch: baselineFetch, hostLimiter: grantingLimiter(), now: NOW },
+    );
+    const { fetch: secondFetch, calls: secondCalls } = trackingFetch(routedFetch(routes(WITHIN_CUTOFF_B)));
+    await runMonitorCheck(
+      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      monitor.id,
+      { fetch: secondFetch, hostLimiter: grantingLimiter(), now: NOW },
+    );
+
+    expect(baselineCalls.some((u) => u.includes('child-no-lastmod.xml'))).toBe(false);
+    expect(secondCalls.some((u) => u.includes('child-no-lastmod.xml'))).toBe(false);
+    // lastmod持ちの子は通常どおり2回目で展開される。
+    expect(secondCalls.some((u) => u.includes('child-with-lastmod.xml'))).toBe(true);
+
+    // lastmod無しの子は Target 登録もされない (selectChildEntries で traverseChild 到達前に除外)。
+    const targets = await listTargetsByMonitor(db(), monitor.id);
+    expect(targets.some((t) => t.url === 'https://example.com/child-no-lastmod.xml')).toBe(false);
+    expect(targets.some((t) => t.url === 'https://example.com/child-with-lastmod.xml')).toBe(true);
+
+    // 定常スキップのみなので audit イベントは作られない (warnのみ)。
+    const audits = await listAuditEventsBySubject(db(), monitor.id);
+    expect(audits.filter((a) => a.action === 'monitor.traversal_truncated')).toHaveLength(0);
+  });
 });
 
 describe('runMonitorCheck: Sitemap Traversal nested sitemap-index depth truncation', () => {

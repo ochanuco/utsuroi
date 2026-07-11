@@ -32,8 +32,10 @@
  * originBlocked / missingLastmodSkipped は境界外/足切り対象の通常スキップであり定常的に
  * 発生しうるため、console.warn のみ (audit行の記録条件は recordTruncationIfAny 参照)。
  *
- * 実URLの updatedAt (lastmod) が無いエントリは、足切りの基準にできないため traverse モードでは
- * 常にスキップする (ADR-0010 「モードBはlastmodを信頼できるサイト向け」という前提そのもの)。
+ * lastmod (updatedAt) が無いエントリは、実URL・子Sitemapとも traverse モードでは常にスキップ
+ * する (実URLは足切りの基準にできず、子SitemapはwatermarkゲートできずADR-0010「lastmodが変化
+ * した子だけを展開する」契約を破って毎チェック無条件フェッチになるため。モードBはlastmodを
+ * 信頼できるサイト向けという前提そのもの。lastmodの無いサイトには Direct モードを使う)。
  *
  * ネストした子sitemap-index (中間ノード) の watermark 前進についても、自分自身の展開だけでなく
  * 再帰先 (孫以下) で何らかの打ち切りが発生していないかを見てから判断する
@@ -86,7 +88,7 @@ interface TraversalCounts {
   depthTruncated: number;
   /** 親Siteのcanonical origin外だったため展開しなかった子Sitemap数 */
   originBlocked: number;
-  /** updatedAt (lastmod) が無く足切り不能だったため無視した実URL数 */
+  /** updatedAt (lastmod) が無く足切り不能・ゲート不能だったため無視した実URL・子Sitemap数 */
   missingLastmodSkipped: number;
   /** processFeedItems 側 (MAX_FEED_ITEMS_PER_CHECK) で打ち切られ、次回以降に持ち越された実URL数 */
   feedItemsTruncated: number;
@@ -136,23 +138,36 @@ interface ChildEntry {
   lastmod: string | null;
 }
 
+/** selectChildEntries を通過した (=lastmod を必ず持つ) 子Sitemapエントリ */
+interface SelectedChildEntry {
+  loc: string;
+  lastmod: string;
+}
+
 /**
- * sitemap-index 配下の子Sitemapエントリを cutoff でフィルタし、lastmod 降順 (null は最後) に
- * ソートする。cutoff外の古い子は「打ち切り」ではなく通常のフィルタ (originBlocked /
- * missingLastmodSkipped と同種の定常スキップ) として除外するため、ここでは counts への
- * カウントは行わない (audit スパム防止の一貫性、レビュー指摘)。
+ * sitemap-index 配下の子Sitemapエントリを cutoff でフィルタし、lastmod 降順にソートする。
+ * - lastmod の無い子は除外する (実URL側と同様に missingLastmodSkipped へ数える)。lastmod が
+ *   無いと watermarkゲート (traverseChild 4.) が成立せず、baseline 後も毎チェック無条件で
+ *   フェッチ・展開されてしまい、「lastmodが変化した子だけを展開する」という ADR-0010 モードBの
+ *   契約を破って子数枠とフェッチ予算を消費し続けるため (レビュー指摘)。そうしたサイトには
+ *   Direct モード (lastmod非依存) を使う。
+ * - cutoff外の古い子も除外する。どちらも「打ち切り」ではなく通常のフィルタ (originBlocked と
+ *   同種の定常スキップ) なので audit には数えない (スパム防止の一貫性)。
  * ソートにより、MAX_CHILD_SITEMAPS の枠を「文書順の先頭」ではなく「実際に最近変化した子」が
  * 優先的に得られるようにする (安定して21件以上の子が並ぶサイトでの恒久除外を防ぐ)。
  * Array#sort は安定ソートなので、lastmod が同値の場合は文書順を維持する。
  */
-function selectChildEntries(entries: ChildEntry[], cutoffIso: string): ChildEntry[] {
-  const eligible = entries.filter((e) => e.lastmod === null || e.lastmod >= cutoffIso);
-  return [...eligible].sort((a, b) => {
-    if (a.lastmod === b.lastmod) return 0;
-    if (a.lastmod === null) return 1; // null (lastmod不明) は最後
-    if (b.lastmod === null) return -1;
-    return a.lastmod < b.lastmod ? 1 : -1; // 降順 (新しい方を優先)
-  });
+function selectChildEntries(entries: ChildEntry[], cutoffIso: string, counts: TraversalCounts): SelectedChildEntry[] {
+  const eligible: SelectedChildEntry[] = [];
+  for (const e of entries) {
+    if (e.lastmod === null) {
+      counts.missingLastmodSkipped += 1;
+      continue;
+    }
+    if (e.lastmod < cutoffIso) continue;
+    eligible.push({ loc: e.loc, lastmod: e.lastmod });
+  }
+  return eligible.sort((a, b) => (a.lastmod < b.lastmod ? 1 : a.lastmod > b.lastmod ? -1 : 0)); // 降順 (新しい方を優先)
 }
 
 /**
@@ -183,7 +198,8 @@ function isWithinSiteOrigin(childUrl: string, primaryOrigin: string | null): boo
 async function traverseChild(
   ctx: CheckContext,
   childUrl: string,
-  childLastmod: string | null,
+  // selectChildEntries が lastmod の無い子を除外済みのため常に非null (watermarkゲートの前提)
+  childLastmod: string,
   depth: number,
   cutoffIso: string,
   maxDepth: number,
@@ -215,8 +231,9 @@ async function traverseChild(
   }
 
   // 4. watermarkゲート: 既存Targetで、かつ子のlastmodが前回と同一ならフェッチせずスキップする
-  // (lastmodが無い子や新規に見つかった子はゲートできないため、常にこの先へ進み条件付きフェッチする)。
-  if (!isNewChild && childLastmod !== null && previous.lastKnownUpdatedAt === childLastmod) {
+  // (新規に見つかった子はゲートできないため、常にこの先へ進み条件付きフェッチする。lastmodの
+  // 無い子はそもそも selectChildEntries で除外済みでここへ到達しない)。
+  if (!isNewChild && previous.lastKnownUpdatedAt === childLastmod) {
     await setTargetLastChecked(ctx.db, childTarget.id, new Date(ctx.now()).toISOString());
     return;
   }
@@ -329,9 +346,7 @@ async function traverseChild(
   // 9. 子の展開 (processFeedItems / 再帰) が正常完了した後にのみ watermark を前進する
   // (at-least-once復旧のため。途中でクラッシュした場合、次回再試行時にまだ「未処理」として
   // 再度この分岐に入れるようにする。feed.ts の setTargetLastKnownUpdatedAt コメント参照)。
-  if (childLastmod !== null) {
-    await setTargetLastKnownUpdatedAt(ctx.db, childTarget.id, childLastmod);
-  }
+  await setTargetLastKnownUpdatedAt(ctx.db, childTarget.id, childLastmod);
 }
 
 /**
@@ -356,10 +371,10 @@ export async function traverseSitemapIndex(
     .filter((item): item is typeof item & { url: string } => item.url !== null)
     .map((item) => ({ loc: item.url, lastmod: item.updatedAt }));
 
-  // cutoff適用 (古い子は通常のフィルタとして除外、カウント対象外) + lastmod降順ソート後に
+  // cutoff適用 (古い子・lastmod無しの子は通常のフィルタとして除外) + lastmod降順ソート後に
   // MAX_CHILD_SITEMAPS の枠を割り当てる。childrenTruncated は「フィルタ後」の超過分だけ数える
   // (cutoff外の子を除外したこと自体は打ち切りではないため、audit スパム防止の一貫性)。
-  const selected = selectChildEntries(childEntries, cutoffIso);
+  const selected = selectChildEntries(childEntries, cutoffIso, counts);
   const toProcess = selected.slice(0, MAX_CHILD_SITEMAPS);
   if (selected.length > MAX_CHILD_SITEMAPS) {
     counts.childrenTruncated += selected.length - MAX_CHILD_SITEMAPS;
