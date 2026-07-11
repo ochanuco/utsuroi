@@ -311,8 +311,9 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
     SOURCE_TYPES.map((t) => el('option', { attrs: { value: t }, text: t }))
   );
   const urlInput = el('input', { attrs: { type: 'url', required: true, placeholder: 'https://example.com/feed.xml' } });
+  // ラベル側で「空欄なら監視なし」を説明済みなので placeholder は短い入力例に留める
   const intervalInput = el('input', {
-    attrs: { type: 'number', min: 1, step: 1, placeholder: '空欄なら監視なしで作成' },
+    attrs: { type: 'number', min: 1, step: 1, placeholder: '例: 60' },
   });
 
   // sitemap系のときだけ種別のすぐ隣に現れるモード選択 (2連メニュー)。別行に置くと
@@ -399,13 +400,10 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
       },
     },
   });
+  const urlField = field('URL', urlInput);
+  urlField.classList.add('field-grow'); // URL列を優先的に広げる (style.css .field-grow)
   form.appendChild(
-    fieldRow([
-      field('種別', typeSelect),
-      modeField,
-      field('URL', urlInput),
-      field('監視間隔 (分・空欄なら監視なし)', intervalInput),
-    ])
+    fieldRow([field('種別', typeSelect), modeField, urlField, field('監視間隔 (分・空欄なら監視なし)', intervalInput)])
   );
   form.appendChild(el('button', { attrs: { type: 'submit' }, text: 'Sourceを追加' }));
   form.appendChild(errorEl);
