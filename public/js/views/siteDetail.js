@@ -42,7 +42,25 @@ const FAILURE_CLASSES = [
   'internal_error',
 ];
 
-const SOURCE_TYPES = ['page', 'rss', 'atom', 'sitemap', 'sitemap-index'];
+/**
+ * Source作成メニューの選択肢。sitemap系は「種別 × 監視モード」の実用的な組み合わせを
+ * フラットに提示する (ADR-0010: Direct既定 / lastmod探索を2段選択にせず1メニューで選ぶ)。
+ * sitemap(urlset) × lastmod探索 はニッチなためメニューには出さない — APIでは
+ * config: {sitemap_mode: 'traverse'} 指定で作成可能。
+ */
+const SOURCE_TYPE_OPTIONS = [
+  { value: 'page', type: 'page', config: null, label: 'page' },
+  { value: 'rss', type: 'rss', config: null, label: 'rss' },
+  { value: 'atom', type: 'atom', config: null, label: 'atom' },
+  { value: 'sitemap', type: 'sitemap', config: null, label: 'sitemap（URL集合の増減）' },
+  { value: 'sitemap-index', type: 'sitemap-index', config: null, label: 'sitemap-index（子一覧の増減）' },
+  {
+    value: 'sitemap-index:traverse',
+    type: 'sitemap-index',
+    config: { sitemap_mode: 'traverse' },
+    label: 'sitemap-index（lastmod探索・新着配信）',
+  },
+];
 
 // --- Sources (+ 監視状態の統合表示) -------------------------------------------
 //
@@ -294,12 +312,6 @@ function renderSourceCard(source, monitorsForSource, monitorsFetchFailed, onSour
   return card;
 }
 
-// sitemap / sitemap-index 選択時のみ表示するモード選択 (ADR-0010: Direct既定 / lastmod探索)。
-const SITEMAP_MODE_OPTIONS = [
-  { value: 'direct', text: 'Direct（URL集合の差分・既定）' },
-  { value: 'traverse', text: 'lastmod探索（子sitemapを辿って新着配信）' },
-];
-
 function renderAddSourceForm(siteId, onSourcesChanged) {
   const wrap = el('div', { class: 'source-add-form' });
   wrap.appendChild(el('h4', { text: 'Sourceを追加' }));
@@ -307,31 +319,12 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
   const typeSelect = el(
     'select',
     {},
-    SOURCE_TYPES.map((t) => el('option', { attrs: { value: t }, text: t }))
+    SOURCE_TYPE_OPTIONS.map((o) => el('option', { attrs: { value: o.value }, text: o.label }))
   );
   const urlInput = el('input', { attrs: { type: 'url', required: true, placeholder: 'https://example.com/feed.xml' } });
   const intervalInput = el('input', {
     attrs: { type: 'number', min: 1, step: 1, placeholder: '空欄なら監視なしで作成' },
   });
-
-  // sitemap系のときだけ表示するモード選択。数値設定 (lastmod_max_age_days / max_depth) は
-  // API専用でUIは提供しない (brief参照)。
-  const sitemapModeSelect = el(
-    'select',
-    {},
-    SITEMAP_MODE_OPTIONS.map((o) => el('option', { attrs: { value: o.value }, text: o.text }))
-  );
-  const sitemapModeField = field('Sitemapモード', sitemapModeSelect);
-  sitemapModeField.classList.add('hidden');
-
-  function isSitemapType(type) {
-    return type === 'sitemap' || type === 'sitemap-index';
-  }
-  function syncSitemapModeVisibility() {
-    sitemapModeField.classList.toggle('hidden', !isSitemapType(typeSelect.value));
-  }
-  typeSelect.addEventListener('change', syncSitemapModeVisibility);
-  syncSitemapModeVisibility();
 
   const errorEl = el('p', { class: 'error hidden' });
 
@@ -344,10 +337,10 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
         if (!url) return;
         const minutesRaw = intervalInput.value.trim();
 
-        const sourceBody = { site_id: siteId, type: typeSelect.value, url };
-        if (isSitemapType(typeSelect.value) && sitemapModeSelect.value === 'traverse') {
-          sourceBody.config = { sitemap_mode: 'traverse' };
-        }
+        // メニューの選択値 (種別×モード) を API の type / config へ展開する。
+        const selected = SOURCE_TYPE_OPTIONS.find((o) => o.value === typeSelect.value) ?? SOURCE_TYPE_OPTIONS[0];
+        const sourceBody = { site_id: siteId, type: selected.type, url };
+        if (selected.config) sourceBody.config = selected.config;
 
         let source;
         try {
@@ -400,7 +393,6 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
   form.appendChild(
     fieldRow([field('種別', typeSelect), field('URL', urlInput), field('監視間隔 (分・空欄なら監視なし)', intervalInput)])
   );
-  form.appendChild(fieldRow([sitemapModeField]));
   form.appendChild(el('button', { attrs: { type: 'submit' }, text: 'Sourceを追加' }));
   form.appendChild(errorEl);
   wrap.appendChild(form);
