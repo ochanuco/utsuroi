@@ -42,25 +42,14 @@ const FAILURE_CLASSES = [
   'internal_error',
 ];
 
+const SOURCE_TYPES = ['page', 'rss', 'atom', 'sitemap', 'sitemap-index'];
+
 /**
- * Source作成メニューの選択肢。sitemap系は「種別 × 監視モード」の実用的な組み合わせを
- * フラットに提示する (ADR-0010: Direct既定 / lastmod探索を2段選択にせず1メニューで選ぶ)。
- * sitemap(urlset) × lastmod探索 はニッチなためメニューには出さない — APIでは
- * config: {sitemap_mode: 'traverse'} 指定で作成可能。
+ * sitemap系の監視モードのUI表示名 (ADR-0010 の用語との対応: 一覧差分 = モードA/Direct、
+ * 新着検知 = モードB/lastmod探索)。API/DBの値は 'direct' | 'traverse' のまま変えない。
+ * メニュー選択肢と Sourceカードのバッジで共通に使う。
  */
-const SOURCE_TYPE_OPTIONS = [
-  { value: 'page', type: 'page', config: null, label: 'page' },
-  { value: 'rss', type: 'rss', config: null, label: 'rss' },
-  { value: 'atom', type: 'atom', config: null, label: 'atom' },
-  { value: 'sitemap', type: 'sitemap', config: null, label: 'sitemap（URL集合の増減）' },
-  { value: 'sitemap-index', type: 'sitemap-index', config: null, label: 'sitemap-index（子一覧の増減）' },
-  {
-    value: 'sitemap-index:traverse',
-    type: 'sitemap-index',
-    config: { sitemap_mode: 'traverse' },
-    label: 'sitemap-index（lastmod探索・新着配信）',
-  },
-];
+const SITEMAP_MODE_LABELS = { direct: '一覧差分', traverse: '新着検知' };
 
 // --- Sources (+ 監視状態の統合表示) -------------------------------------------
 //
@@ -280,7 +269,7 @@ function renderSourceCard(source, monitorsForSource, monitorsFetchFailed, onSour
     headerChildren.push(
       el('span', {
         class: `badge ${isTraverse ? 'badge-mode-traverse' : 'badge-mode-direct'}`,
-        text: isTraverse ? 'lastmod探索' : 'Direct',
+        text: isTraverse ? SITEMAP_MODE_LABELS.traverse : SITEMAP_MODE_LABELS.direct,
       })
     );
   }
@@ -319,12 +308,32 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
   const typeSelect = el(
     'select',
     {},
-    SOURCE_TYPE_OPTIONS.map((o) => el('option', { attrs: { value: o.value }, text: o.label }))
+    SOURCE_TYPES.map((t) => el('option', { attrs: { value: t }, text: t }))
   );
   const urlInput = el('input', { attrs: { type: 'url', required: true, placeholder: 'https://example.com/feed.xml' } });
   const intervalInput = el('input', {
     attrs: { type: 'number', min: 1, step: 1, placeholder: '空欄なら監視なしで作成' },
   });
+
+  // sitemap系のときだけ種別のすぐ隣に現れるモード選択 (2連メニュー)。別行に置くと
+  // 見落とされるため、種別と同じ行に隣接配置する。数値設定 (lastmod_max_age_days /
+  // max_depth) はAPI専用でUIは提供しない。
+  const modeSelect = el(
+    'select',
+    {},
+    ['direct', 'traverse'].map((m) => el('option', { attrs: { value: m }, text: SITEMAP_MODE_LABELS[m] }))
+  );
+  const modeField = field('モード', modeSelect);
+  modeField.classList.add('hidden');
+
+  function isSitemapType(type) {
+    return type === 'sitemap' || type === 'sitemap-index';
+  }
+  function syncModeVisibility() {
+    modeField.classList.toggle('hidden', !isSitemapType(typeSelect.value));
+  }
+  typeSelect.addEventListener('change', syncModeVisibility);
+  syncModeVisibility();
 
   const errorEl = el('p', { class: 'error hidden' });
 
@@ -337,10 +346,10 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
         if (!url) return;
         const minutesRaw = intervalInput.value.trim();
 
-        // メニューの選択値 (種別×モード) を API の type / config へ展開する。
-        const selected = SOURCE_TYPE_OPTIONS.find((o) => o.value === typeSelect.value) ?? SOURCE_TYPE_OPTIONS[0];
-        const sourceBody = { site_id: siteId, type: selected.type, url };
-        if (selected.config) sourceBody.config = selected.config;
+        const sourceBody = { site_id: siteId, type: typeSelect.value, url };
+        if (isSitemapType(typeSelect.value) && modeSelect.value === 'traverse') {
+          sourceBody.config = { sitemap_mode: 'traverse' };
+        }
 
         let source;
         try {
@@ -391,7 +400,12 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
     },
   });
   form.appendChild(
-    fieldRow([field('種別', typeSelect), field('URL', urlInput), field('監視間隔 (分・空欄なら監視なし)', intervalInput)])
+    fieldRow([
+      field('種別', typeSelect),
+      modeField,
+      field('URL', urlInput),
+      field('監視間隔 (分・空欄なら監視なし)', intervalInput),
+    ])
   );
   form.appendChild(el('button', { attrs: { type: 'submit' }, text: 'Sourceを追加' }));
   form.appendChild(errorEl);
