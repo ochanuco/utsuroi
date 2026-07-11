@@ -265,6 +265,9 @@ tbody tr:hover {
 .badge-blocked_by_robots { background: var(--danger-bg); color: var(--danger); }
 .badge-failing { background: var(--danger-bg); color: var(--danger); }
 .badge-archived { background: var(--surface-2); color: var(--muted); }
+/* sitemap系Sourceの監視モード (ADR-0010: Direct / lastmod探索) */
+.badge-mode-direct { background: var(--surface-2); color: var(--text); }
+.badge-mode-traverse { background: #1c2742; color: var(--accent); }
 
 .banner {
   padding: 12px 16px;
