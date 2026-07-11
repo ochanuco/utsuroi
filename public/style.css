@@ -439,6 +439,23 @@ pre.code-block {
   margin: 0 0 8px;
   font-size: 14px;
 }
+/* extract.fields (ADR-0013) の行エディタ: 名前 + 種別 + 値 + 削除ボタンを1行に並べる */
+.fields-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.fields-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.fields-row input[type='text'] {
+  flex: 1;
+  min-width: 140px;
+}
 .inline-form {
   display: inline-flex;
   align-items: center;

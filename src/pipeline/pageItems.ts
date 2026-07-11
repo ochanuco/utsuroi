@@ -22,15 +22,27 @@
  * 抽出0件の扱い: HTML構造の変化やセレクタの陳腐化により、以前は抽出できていたページが
  * 突然0件になるケースを継続的に検知する仕組み (異常検知) は v1 のスコープ外。今回は
  * console.warn で件数を記録するのみに留め、将来課題として明記する。
+ *
+ * 構造化フィールド抽出 (extract.fields, ADR-0013): extractItems が返す ExtractedItem.fields
+ * (価格・所在地等、設定順・未マッチは省く) を「名前: 値」の行形式に整形して FeedItem.summary に
+ * 載せる (0件なら null)。processFeedItems には summaryAsDiffPreview:true を渡し、'new'/'updated'
+ * いずれの Change でも summary を diff_preview として書かせる — pageItems 経由の呼び出しだけが
+ * この opt-in を有効にする (rss/atom 等、他の呼び出し元の通知内容は変更しない)。
  */
 import { sha256Hex } from '../shared/hash';
 import { extractItems } from '../normalize/extractItems';
 import { extractCharsetFromContentType } from '../normalize';
-import type { FetchSuccess } from '../shared/contracts';
+import type { FeedItem, FetchSuccess } from '../shared/contracts';
 import { createSnapshot, type TargetRow } from '../db';
 import { bodyKey, putIfAbsent } from './r2';
 import { processFeedItems } from './feed';
 import type { CheckContext } from './types';
+
+/** ExtractedItem.fields を「名前: 値」の行形式に整形する。0件なら null (SPEC: summary は任意) */
+function formatFieldsAsSummary(fields: Array<{ name: string; value: string }>): string | null {
+  if (fields.length === 0) return null;
+  return fields.map((f) => `${f.name}: ${f.value}`).join('\n');
+}
 
 export async function processPageItems(
   ctx: CheckContext,
@@ -54,7 +66,7 @@ export async function processPageItems(
     return;
   }
 
-  const items = await extractItems(body, {
+  const extracted = await extractItems(body, {
     itemSelector: extractConfig.itemSelector,
     linkSelector: extractConfig.linkSelector,
     titleSelector: extractConfig.titleSelector,
@@ -62,9 +74,10 @@ export async function processPageItems(
     // (ctx.source.url ではなく outcome.finalUrl を使う。レビュー指摘)。
     baseUrl: outcome.finalUrl,
     headerCharset: extractCharsetFromContentType(outcome.contentType),
+    fields: extractConfig.fields,
   });
 
-  if (items.length === 0) {
+  if (extracted.length === 0) {
     console.warn(
       `[pageItems] processPageItems: monitor=${ctx.monitor.id} source=${ctx.source.id} itemSelector=` +
         `${JSON.stringify(extractConfig.itemSelector)} で抽出されたアイテムが0件でした ` +
@@ -73,7 +86,18 @@ export async function processPageItems(
     // 抽出0件でも Snapshot は下で記録する (フェッチ自体は成功しており、etag/lastModified を
     // 保存しないと次回も全文を取り直すことになるため)。
   } else {
-    await processFeedItems(ctx, items);
+    // ExtractedItem.fields (ADR-0013) を summary へ整形した FeedItem に変換してから
+    // processFeedItems へ渡す (fields 自体は FeedItem の契約に無いフィールドのため、
+    // 下流へそのまま持ち込まず summary の形で1回だけ変換する)。
+    const items: FeedItem[] = extracted.map((item) => ({
+      stableKey: item.stableKey,
+      url: item.url,
+      title: item.title,
+      publishedAt: item.publishedAt,
+      updatedAt: item.updatedAt,
+      summary: formatFieldsAsSummary(item.fields),
+    }));
+    await processFeedItems(ctx, items, undefined, { summaryAsDiffPreview: true });
   }
 
   // Snapshot (etag/lastModified を含む条件付きリクエストのメタデータ) は、アイテム処理が

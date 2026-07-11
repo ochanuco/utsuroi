@@ -347,6 +347,81 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
   const itemSelectorField = field('アイテムセレクタ', itemSelectorInput);
   itemSelectorField.classList.add('hidden');
 
+  // page × 新着検知 のときだけ表示する、構造化フィールド抽出の行エディタ (ADR-0013)。
+  // 各行 = 名前 + 種別 (ラベル/セレクタ) + 値 + 削除ボタン。最大12件はAPI側で検証するため
+  // ここでは行数を制限しない (超過時はサーバーから invalid_field/400 が返り、その旨を表示する)。
+  const FIELD_KIND_LABELS = { label: 'ラベル', selector: 'セレクタ' };
+  const fieldsRows = [];
+  const fieldsRowsContainer = el('div', { class: 'fields-rows' });
+
+  function addFieldRow() {
+    const nameInput = el('input', { attrs: { type: 'text', placeholder: '名前（例: 価格）' } });
+    const kindSelect = el(
+      'select',
+      {},
+      Object.entries(FIELD_KIND_LABELS).map(([value, labelText]) => el('option', { attrs: { value }, text: labelText }))
+    );
+    const valueInput = el('input', { attrs: { type: 'text', placeholder: 'ラベル文字列 または CSSセレクタ' } });
+    const row = el('div', { class: 'field-row fields-row' });
+    const removeButton = el('button', {
+      class: 'button-ghost',
+      text: 'この行を削除',
+      on: {
+        click: (event) => {
+          event.preventDefault();
+          const idx = fieldsRows.indexOf(entry);
+          if (idx >= 0) fieldsRows.splice(idx, 1);
+          row.remove();
+        },
+      },
+    });
+    row.appendChild(nameInput);
+    row.appendChild(kindSelect);
+    row.appendChild(valueInput);
+    row.appendChild(removeButton);
+    const entry = {
+      node: row,
+      read: () => ({ name: nameInput.value.trim(), kind: kindSelect.value, value: valueInput.value.trim() }),
+    };
+    fieldsRows.push(entry);
+    fieldsRowsContainer.appendChild(row);
+  }
+
+  function resetFieldsRows() {
+    fieldsRows.length = 0;
+    while (fieldsRowsContainer.firstChild) fieldsRowsContainer.removeChild(fieldsRowsContainer.firstChild);
+  }
+
+  const addFieldRowButton = el('button', {
+    class: 'button-ghost',
+    text: 'フィールドを追加',
+    on: { click: (event) => { event.preventDefault(); addFieldRow(); } },
+  });
+  const fieldsField = el('div', { class: 'field' }, [
+    el('label', { text: '構造化フィールド抽出 (任意・価格や所在地などを通知に含める)' }),
+    fieldsRowsContainer,
+    addFieldRowButton,
+  ]);
+  fieldsField.classList.add('hidden');
+
+  /**
+   * fieldsRows の入力を extract.fields (API入力形式) へ変換する。空行 (名前・値とも未入力) は
+   * 無視する。片方だけ入力されている行はエラー文字列を返す (呼び出し側で表示・送信中断する)。
+   */
+  function readFieldsInput() {
+    const fields = [];
+    for (const entry of fieldsRows) {
+      const row = entry.read();
+      if (!row.name && !row.value) continue; // 空行は無視
+      if (!row.name) return { error: 'フィールド名を入力してください。' };
+      if (!row.value) {
+        return { error: `フィールド "${row.name}" の${FIELD_KIND_LABELS[row.kind]}を入力してください。` };
+      }
+      fields.push({ name: row.name, [row.kind]: row.value });
+    }
+    return { fields };
+  }
+
   // page × 本文差分 のときだけ表示する、DOM抽出/除外セレクタ (任意・カンマ区切りで複数可)。
   // include: このセレクタの範囲だけを正規化・diff対象にする / ignore: この範囲を除外する
   // (normalize.ts の includeSelectors/ignoreSelectors。API は PR #17 で開通済み、その UI 入口)。
@@ -406,6 +481,7 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
     const showExtract = isPage && modeSelect.value === 'extract';
     const showContent = isPage && modeSelect.value === 'content';
     itemSelectorField.classList.toggle('hidden', !showExtract);
+    fieldsField.classList.toggle('hidden', !showExtract);
     includeSelectorsField.classList.toggle('hidden', !showContent);
     ignoreSelectorsField.classList.toggle('hidden', !showContent);
   }
@@ -439,7 +515,14 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
             errorEl.classList.remove('hidden');
             return;
           }
+          const fieldsResult = readFieldsInput();
+          if (fieldsResult.error) {
+            errorEl.textContent = fieldsResult.error;
+            errorEl.classList.remove('hidden');
+            return;
+          }
           sourceBody.config = { page_mode: 'extract', extract: { item_selector: itemSelector } };
+          if (fieldsResult.fields.length > 0) sourceBody.config.extract.fields = fieldsResult.fields;
         } else if (isPageType(typeSelect.value) && modeSelect.value === 'content') {
           // 本文差分の DOM 抽出/除外セレクタ (任意)。両方空なら config 自体を付けない (従来どおり)。
           const includeSelectors = parseSelectorList(includeSelectorsInput.value);
@@ -491,6 +574,7 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
         urlInput.value = '';
         intervalInput.value = '';
         itemSelectorInput.value = '';
+        resetFieldsRows();
         try {
           await onSourcesChanged();
         } catch (err) {
@@ -513,6 +597,8 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
   );
   // 本文差分のDOM抽出/除外セレクタは任意項目のため2行目に置く (1行目はモードに応じた必須系のみ)。
   form.appendChild(fieldRow([includeSelectorsField, ignoreSelectorsField]));
+  // 新着検知の構造化フィールド抽出 (任意・行が可変のため単独行に置く)。
+  form.appendChild(fieldsField);
   form.appendChild(el('button', { attrs: { type: 'submit' }, text: 'Sourceを追加' }));
   form.appendChild(errorEl);
   wrap.appendChild(form);

@@ -38,6 +38,16 @@ import { decodeHtmlBestEffort } from './charset';
 import { normalizeUrlAttribute } from './url';
 import { DEFAULT_STRIP_QUERY_PARAMS } from './constants';
 
+/** extract.fields (ADR-0013) の1フィールド定義。selector / label はどちらか一方を指定する */
+export interface ExtractFieldOptions {
+  /** 通知に表示するフィールド名 */
+  name: string;
+  /** セレクタ方式: アイテム内の最初のマッチのサブツリーテキストを値とする */
+  selector?: string;
+  /** ラベル方式: dt のサブツリーテキスト (正規化後) がこのラベルと完全一致する直後の dd を値とする */
+  label?: string;
+}
+
 export interface ExtractItemsOptions {
   /** アイテム集合を区切る CSS セレクタ (例: '.property_unit') */
   itemSelector: string;
@@ -49,10 +59,33 @@ export interface ExtractItemsOptions {
   baseUrl: string;
   /** HTTP レスポンスの Content-Type ヘッダから抽出した charset (normalize.ts と同じ decode 経路) */
   headerCharset?: string;
+  /**
+   * 構造化フィールド抽出の設定 (ADR-0013)。設定順で ExtractedItem.fields に反映される。
+   * selector/label がどちらも有効な値か (どちらか一方必須・件数上限) は API 層
+   * (src/api/routes/sources.ts) が作成時に検証済みという前提で、ここでは追加検証しない。
+   */
+  fields?: ExtractFieldOptions[];
+}
+
+/** ADR-0013: extractItems が返す1アイテム。fields は設定順、未マッチのフィールドは含まない */
+export interface ExtractedItem extends FeedItem {
+  fields: Array<{ name: string; value: string }>;
 }
 
 /** タイトル文字列の上限 (SPEC 準拠, 他 Source 種別と揃える) */
 const TITLE_MAX_LENGTH = 256;
+
+/** フィールド値の上限 (ADR-0013) */
+const FIELD_VALUE_MAX_LENGTH = 200;
+
+/** extract.fields の1フィールドについて、アイテム内での抽出進行状態を追跡する */
+interface FieldState {
+  /** 最初のマッチが確定済みか (確定後は後続のマッチを無視する) */
+  matched: boolean;
+  /** 現在、このフィールドの値になるサブツリーのテキストを収集中か */
+  collecting: boolean;
+  value: string;
+}
 
 interface ItemAccumulator {
   url: string | null;
@@ -62,6 +95,20 @@ interface ItemAccumulator {
    * titleSelector 未指定時のみ使う (指定時はリンクテキストへフォールバックしない)。
    */
   collectingLinkTitle: boolean;
+  /** opts.fields と同じ並び順のフィールド抽出状態 (ADR-0013) */
+  fields: FieldState[];
+  /** ラベル方式 (dt/dd) 用: 現在開いている dt のサブツリーテキストを収集中か */
+  dtCollecting: boolean;
+  /** ラベル方式用: 現在開いている dt のサブツリーテキストのバッファ */
+  dtBuffer: string;
+  /**
+   * ラベル方式用: 直前に閉じた dt の正規化済みラベル文字列。次の dt が開いた時点で
+   * リセットされる (ADR-0013: 「直前ラベル」は次の dt 開始でリセット)。
+   * 正規化後に空文字になる dt (`<dt>&nbsp;</dt>` 等のダミー行) は null のままにする。
+   */
+  lastLabel: string | null;
+  /** ラベル方式用: 現在開いている dd が対応する fields のインデックス (無ければ null) */
+  ddTargetFieldIndex: number | null;
 }
 
 /**
@@ -86,12 +133,24 @@ function collapseWhitespace(input: string): string {
   return input.replace(/\s+/g, ' ').trim();
 }
 
-export async function extractItems(body: Uint8Array, opts: ExtractItemsOptions): Promise<FeedItem[]> {
+/**
+ * フィールド (ラベル/値) 用のテキスト正規化 (ADR-0013)。collapseWhitespace に加え、
+ * `&nbsp;` (10進/16進の数値文字参照表記を含む) を半角スペース相当として扱う。
+ * HTMLRewriter の text ハンドラは実体参照をデコードせずそのまま渡す (lol-html 実測) ため、
+ * `<dt>&nbsp;</dt>` のようなダミー行を素の collapseWhitespace だけでは空文字と判定できない。
+ */
+function normalizeFieldText(input: string): string {
+  const withoutNbsp = input.replace(/&nbsp;|&#160;|&#xa0;/gi, ' ');
+  return collapseWhitespace(withoutNbsp);
+}
+
+export async function extractItems(body: Uint8Array, opts: ExtractItemsOptions): Promise<ExtractedItem[]> {
   const html = decodeHtmlBestEffort(body, opts.headerCharset);
 
   const linkSelector = opts.linkSelector ?? 'a';
   const combinedLinkSelector = `${opts.itemSelector} ${linkSelector}`;
   const combinedTitleSelector = opts.titleSelector ? `${opts.itemSelector} ${opts.titleSelector}` : null;
+  const fieldOptions = opts.fields ?? [];
 
   const accumulators: ItemAccumulator[] = [];
   let current: ItemAccumulator | null = null;
@@ -102,7 +161,16 @@ export async function extractItems(body: Uint8Array, opts: ExtractItemsOptions):
       depth += 1;
       if (depth === 1) {
         // 深さ 0→1: 新しいアイテムの開始 (入れ子の内側マッチは無視し、外側優先でフラット化する)。
-        current = { url: null, title: '', collectingLinkTitle: false };
+        current = {
+          url: null,
+          title: '',
+          collectingLinkTitle: false,
+          fields: fieldOptions.map(() => ({ matched: false, collecting: false, value: '' })),
+          dtCollecting: false,
+          dtBuffer: '',
+          lastLabel: null,
+          ddTargetFieldIndex: null,
+        };
         accumulators.push(current);
       }
       e.onEndTag(() => {
@@ -155,10 +223,89 @@ export async function extractItems(body: Uint8Array, opts: ExtractItemsOptions):
     });
   }
 
+  // --- extract.fields (ADR-0013) -------------------------------------------------------
+  //
+  // セレクタ方式: `${itemSelector} ${field.selector}` の最初のマッチのサブツリーテキストを
+  // 値とする。link/titleSelector と同じ element+onEndTag による境界確定 + 「最初のマッチ優先」
+  // (FieldState.matched) の組み合わせで実現する。
+  fieldOptions.forEach((f, idx) => {
+    if (!f.selector) return;
+    const combinedFieldSelector = `${opts.itemSelector} ${f.selector}`;
+    rewriter.on(combinedFieldSelector, {
+      element(e) {
+        if (!current) return;
+        const fs = current.fields[idx];
+        if (!fs || fs.matched) return;
+        fs.collecting = true;
+        e.onEndTag(() => {
+          fs.matched = true;
+          fs.collecting = false;
+        });
+      },
+      text(t) {
+        const fs = current?.fields[idx];
+        if (fs?.collecting) fs.value += t.text;
+      },
+    });
+  });
+
+  // ラベル方式: dt のサブツリーテキストを正規化した結果が label と完全一致する直後の dd を値とする。
+  // dt/dd はアイテムごとに1つのハンドラで共通処理し (フィールド数分ハンドラを増やさない)、
+  // dt 終了時に確定した lastLabel を dd 開始時に fields (label方式のみ、未確定のもの優先) と照合する。
+  if (fieldOptions.some((f) => f.label)) {
+    rewriter.on(`${opts.itemSelector} dt`, {
+      element(e) {
+        if (!current) return;
+        const acc = current;
+        acc.dtBuffer = '';
+        acc.dtCollecting = true;
+        // 「直前ラベル」は次の dt が開いた時点でリセットする (ADR-0013)。
+        acc.lastLabel = null;
+        e.onEndTag(() => {
+          acc.dtCollecting = false;
+          const normalized = normalizeFieldText(acc.dtBuffer);
+          // 正規化後に空文字になる dt (`<dt>&nbsp;</dt>` 等のダミー行) はラベル扱いしない。
+          acc.lastLabel = normalized.length > 0 ? normalized : null;
+        });
+      },
+      text(t) {
+        if (current?.dtCollecting) current.dtBuffer += t.text;
+      },
+    });
+
+    rewriter.on(`${opts.itemSelector} dd`, {
+      element(e) {
+        if (!current) return;
+        const acc = current;
+        acc.ddTargetFieldIndex = null;
+        if (acc.lastLabel !== null) {
+          // 未確定 (matched===false) の label方式フィールドのうち、最初に一致したものを採用する。
+          const idx = fieldOptions.findIndex((f, i) => f.label === acc.lastLabel && !acc.fields[i]!.matched);
+          if (idx !== -1) {
+            acc.ddTargetFieldIndex = idx;
+            acc.fields[idx]!.collecting = true;
+          }
+        }
+        e.onEndTag(() => {
+          const idx = acc.ddTargetFieldIndex;
+          if (idx !== null) {
+            acc.fields[idx]!.matched = true;
+            acc.fields[idx]!.collecting = false;
+          }
+          acc.ddTargetFieldIndex = null;
+        });
+      },
+      text(t) {
+        if (!current || current.ddTargetFieldIndex === null) return;
+        current.fields[current.ddTargetFieldIndex]!.value += t.text;
+      },
+    });
+  }
+
   const rewritten = rewriter.transform(new Response(html));
   await rewritten.text();
 
-  const items: FeedItem[] = [];
+  const items: ExtractedItem[] = [];
   // 同一URL (正規化後に一致するものを含む) へ解決される複数アイテムは最初の1件だけを採用する。
   // stableKey = url のため重複を通すと同一 dedupeKey の FeedItem が並び、下流で無駄な
   // upsert/照会が走るだけになる (buildSitemapResult の seen と同じ規約)。
@@ -168,6 +315,13 @@ export async function extractItems(body: Uint8Array, opts: ExtractItemsOptions):
     if (seen.has(acc.url)) continue;
     seen.add(acc.url);
     const title = collapseWhitespace(acc.title);
+    const fields: Array<{ name: string; value: string }> = [];
+    fieldOptions.forEach((f, idx) => {
+      const fs = acc.fields[idx];
+      if (!fs?.matched) return; // 未マッチのフィールドは結果から省く (ADR-0013)
+      const value = normalizeFieldText(fs.value);
+      fields.push({ name: f.name, value: value.slice(0, FIELD_VALUE_MAX_LENGTH) });
+    });
     items.push({
       stableKey: acc.url,
       url: acc.url,
@@ -175,6 +329,7 @@ export async function extractItems(body: Uint8Array, opts: ExtractItemsOptions):
       publishedAt: null,
       updatedAt: null,
       summary: null,
+      fields,
     });
   }
   return items;

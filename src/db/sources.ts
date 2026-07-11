@@ -44,6 +44,23 @@ export async function listSourcesBySite(
   return results.map(mapRow);
 }
 
+/**
+ * Source の config だけを丸ごと置き換える (ADR-0013、PATCH /api/sources/:id)。
+ * url/type/site_id はここでは変更しない。対象が存在しない場合は null を返す (呼び出し側で404にする)。
+ */
+export async function updateSourceConfig(
+  db: D1Database,
+  id: string,
+  config: SourceConfig | null
+): Promise<SourceRow | null> {
+  const result = await db
+    .prepare(`UPDATE sources SET config = ?, updated_at = ? WHERE id = ?`)
+    .bind(toJson(config), nowIso(), id)
+    .run();
+  if ((result.meta?.changes ?? 0) === 0) return null;
+  return getSource(db, id);
+}
+
 export async function countSourcesBySite(db: D1Database, siteId: string): Promise<number> {
   const row = await db
     .prepare(`SELECT COUNT(*) as count FROM sources WHERE site_id = ?`)

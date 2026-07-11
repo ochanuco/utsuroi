@@ -10,6 +10,9 @@ import {
   listDeliveriesByChange,
   listSnapshotsByMonitor,
   listTargetsByMonitor,
+  type MonitorRow,
+  type SiteRow,
+  type SourceRow,
 } from '../../src/db';
 import { buildPipelineFixture, db, fakeEnv, grantingLimiter, routedFetch } from './helpers';
 
@@ -458,5 +461,99 @@ describe('processFeedItems: URL 処理上限 (MAX_FEED_ITEMS_PER_CHECK, silent t
       'https://example.com/cap-page-1',
       'https://example.com/cap-page-2',
     ]);
+  });
+});
+
+// ADR-0013: processFeedItems の第4引数 (opts.summaryAsDiffPreview) は既定 false。
+// pageItems.ts 経由の呼び出しのみが true を渡すため、他の呼び出し元 (rss/atom/sitemap) は
+// このオプションを渡さない限り item.summary が diff_preview に書かれないことを固定する。
+describe('processFeedItems: summaryAsDiffPreview opt-in (ADR-0013)', () => {
+  function buildCtx(monitor: MonitorRow, source: SourceRow, site: SiteRow): CheckContext {
+    return {
+      env: fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      db: db(),
+      monitor,
+      source,
+      site,
+      policy: {} as unknown as CheckContext['policy'],
+      job: {} as unknown as CheckContext['job'],
+      now: () => Date.now(),
+      changeIds: [],
+    };
+  }
+
+  it('writes item.summary as diff_preview for a "new" Change when summaryAsDiffPreview is true', async () => {
+    const { monitor, source, site } = await buildPipelineFixture({
+      sourceType: 'page',
+      sourceUrl: 'https://example.com/diffpreview-true',
+    });
+
+    // baseline call: Target登録のみ (Change は作らない)。
+    const baselineItem: FeedItem = {
+      stableKey: 'https://example.com/diffpreview-true/a',
+      url: 'https://example.com/diffpreview-true/a',
+      title: 'A',
+      publishedAt: null,
+      updatedAt: null,
+      summary: null,
+    };
+    await processFeedItems(buildCtx(monitor, source, site), [baselineItem]);
+
+    // baseline を抜けた状態を模すため、lastCheckedAt を持つ monitor スナップショットで
+    // 新しい item を処理する (processFeedItems は ctx.monitor.lastCheckedAt しか見ないため、
+    // DB更新を経由せずこの1点だけ差し替えれば「2回目以降のチェック」を再現できる)。
+    const nonBaselineMonitor: MonitorRow = { ...monitor, lastCheckedAt: '2020-01-01T00:00:00.000Z' };
+    const newItem: FeedItem = {
+      stableKey: 'https://example.com/diffpreview-true/b',
+      url: 'https://example.com/diffpreview-true/b',
+      title: 'B',
+      publishedAt: null,
+      updatedAt: null,
+      summary: '価格: 4,500万円\n所在地: 東京都新宿区',
+    };
+    const result = await processFeedItems(buildCtx(nonBaselineMonitor, source, site), [newItem], undefined, {
+      summaryAsDiffPreview: true,
+    });
+    expect(result.truncatedCount).toBe(0);
+
+    const changes = await listChangesByMonitor(db(), monitor.id);
+    expect(changes).toHaveLength(1);
+    expect(changes[0]?.kind).toBe('new');
+    expect(changes[0]?.diffPreview).toBe('価格: 4,500万円\n所在地: 東京都新宿区');
+  });
+
+  it('leaves diff_preview null for a "new" Change when summaryAsDiffPreview is omitted (default false)', async () => {
+    const { monitor, source, site } = await buildPipelineFixture({
+      sourceType: 'page',
+      sourceUrl: 'https://example.com/diffpreview-false',
+    });
+
+    const baselineItem: FeedItem = {
+      stableKey: 'https://example.com/diffpreview-false/a',
+      url: 'https://example.com/diffpreview-false/a',
+      title: 'A',
+      publishedAt: null,
+      updatedAt: null,
+      summary: null,
+    };
+    await processFeedItems(buildCtx(monitor, source, site), [baselineItem]);
+
+    const nonBaselineMonitor: MonitorRow = { ...monitor, lastCheckedAt: '2020-01-01T00:00:00.000Z' };
+    const newItem: FeedItem = {
+      stableKey: 'https://example.com/diffpreview-false/b',
+      url: 'https://example.com/diffpreview-false/b',
+      title: 'B',
+      publishedAt: null,
+      updatedAt: null,
+      // summary が入っていても、summaryAsDiffPreview を渡さない呼び出し元では無視される
+      // (rss/atom アダプタ等、本ADRで通知内容を変更しない経路の回帰固定)。
+      summary: 'this should not leak into diff_preview',
+    };
+    await processFeedItems(buildCtx(nonBaselineMonitor, source, site), [newItem]);
+
+    const changes = await listChangesByMonitor(db(), monitor.id);
+    expect(changes).toHaveLength(1);
+    expect(changes[0]?.kind).toBe('new');
+    expect(changes[0]?.diffPreview).toBeNull();
   });
 });

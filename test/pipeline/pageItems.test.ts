@@ -174,6 +174,134 @@ describe('runMonitorCheck: page item extraction incremental detection', () => {
   });
 });
 
+// ADR-0013: extract.fields (価格・所在地等) を「名前: 値」の行形式で FeedItem.summary へ整形し、
+// pageItems 経由の呼び出しのみ opt-in (summaryAsDiffPreview) で Change.diff_preview に載せる。
+function listingHtmlWithFields(items: Array<{ href: string; title: string; price: string; address: string }>): string {
+  return `<html><body><ul>
+    ${items
+      .map(
+        (i) => `<li class="property_unit">
+          <h2>${i.title}</h2>
+          <a href="${i.href}">detail</a>
+          <span class="price">${i.price}</span>
+          <dl><dt>所在地</dt><dd>${i.address}</dd></dl>
+        </li>`,
+      )
+      .join('\n')}
+  </ul></body></html>`;
+}
+
+describe('runMonitorCheck: page item extraction fields -> summary -> diff_preview (ADR-0013)', () => {
+  it('formats extracted fields as "name: value" lines into summary, and writes them as diff_preview for a new item', async () => {
+    const { monitor } = await buildPipelineFixture({
+      sourceType: 'page',
+      sourceUrl: 'https://example.com/listing-fields',
+      sourceConfig: {
+        pageMode: 'extract',
+        extract: {
+          itemSelector: '.property_unit',
+          titleSelector: 'h2',
+          fields: [
+            { name: '価格', selector: '.price' },
+            { name: '所在地', label: '所在地' },
+          ],
+        },
+      },
+    });
+
+    const baselineStub = routedFetch({
+      [ROBOTS_ALLOW[0]]: ROBOTS_ALLOW[1],
+      'https://example.com/listing-fields': () =>
+        new Response(
+          listingHtmlWithFields([{ href: '/units/a', title: 'Unit A', price: '3,980万円', address: '東京都渋谷区' }]),
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        ),
+    });
+    await runMonitorCheck(
+      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      monitor.id,
+      { fetch: baselineStub, hostLimiter: grantingLimiter() },
+    );
+
+    // 2回目: 新しいアイテム (Unit B) が追加される -> 'new' Change の diff_preview に
+    // 整形済み summary ("価格: ...\n所在地: ...") が入ることを確認する。
+    const secondStub = routedFetch({
+      [ROBOTS_ALLOW[0]]: ROBOTS_ALLOW[1],
+      'https://example.com/listing-fields': () =>
+        new Response(
+          listingHtmlWithFields([
+            { href: '/units/a', title: 'Unit A', price: '3,980万円', address: '東京都渋谷区' },
+            { href: '/units/b', title: 'Unit B', price: '4,500万円', address: '東京都新宿区' },
+          ]),
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        ),
+    });
+    const result = await runMonitorCheck(
+      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      monitor.id,
+      { fetch: secondStub, hostLimiter: grantingLimiter() },
+    );
+    expect(result.changeIds).toHaveLength(1);
+
+    const changes = await listChangesByMonitor(db(), monitor.id);
+    expect(changes).toHaveLength(1);
+    expect(changes[0]?.targetUrl).toBe('https://example.com/units/b');
+    expect(changes[0]?.diffPreview).toBe('価格: 4,500万円\n所在地: 東京都新宿区');
+  });
+
+  it('leaves diff_preview null when the extracted item has zero matched fields', async () => {
+    const { monitor } = await buildPipelineFixture({
+      sourceType: 'page',
+      sourceUrl: 'https://example.com/listing-no-fields',
+      sourceConfig: {
+        pageMode: 'extract',
+        extract: {
+          itemSelector: '.property_unit',
+          titleSelector: 'h2',
+          // このSourceのHTMLには存在しないラベルのみを設定する -> 常に未マッチで fields は0件になる。
+          fields: [{ name: '間取り', label: '間取り' }],
+        },
+      },
+    });
+
+    const baselineStub = routedFetch({
+      [ROBOTS_ALLOW[0]]: ROBOTS_ALLOW[1],
+      'https://example.com/listing-no-fields': () =>
+        new Response(
+          listingHtmlWithFields([{ href: '/units/a', title: 'Unit A', price: '3,980万円', address: '東京都渋谷区' }]),
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        ),
+    });
+    await runMonitorCheck(
+      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      monitor.id,
+      { fetch: baselineStub, hostLimiter: grantingLimiter() },
+    );
+
+    const secondStub = routedFetch({
+      [ROBOTS_ALLOW[0]]: ROBOTS_ALLOW[1],
+      'https://example.com/listing-no-fields': () =>
+        new Response(
+          listingHtmlWithFields([
+            { href: '/units/a', title: 'Unit A', price: '3,980万円', address: '東京都渋谷区' },
+            { href: '/units/b', title: 'Unit B', price: '4,500万円', address: '東京都新宿区' },
+          ]),
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        ),
+    });
+    const result = await runMonitorCheck(
+      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      monitor.id,
+      { fetch: secondStub, hostLimiter: grantingLimiter() },
+    );
+    expect(result.changeIds).toHaveLength(1);
+
+    const changes = await listChangesByMonitor(db(), monitor.id);
+    expect(changes).toHaveLength(1);
+    expect(changes[0]?.diffPreview).toBeNull();
+  });
+});
+
 describe('runMonitorCheck: page without pageMode config still uses content-diff (processPageContent)', () => {
   it('a page Source with no config takes the body-diff path, not item extraction', async () => {
     const { monitor } = await buildPipelineFixture({
