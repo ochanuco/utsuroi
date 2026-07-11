@@ -230,10 +230,13 @@ async function traverseChild(
     return;
   }
 
-  // 4. watermarkゲート: 既存Targetで、かつ子のlastmodが前回と同一ならフェッチせずスキップする
-  // (新規に見つかった子はゲートできないため、常にこの先へ進み条件付きフェッチする。lastmodの
-  // 無い子はそもそも selectChildEntries で除外済みでここへ到達しない)。
-  if (!isNewChild && previous.lastKnownUpdatedAt === childLastmod) {
+  // 4. watermarkゲート: 既存Targetで、子のlastmodが既存watermark以下 (同一または後退) なら
+  // フェッチせずスキップする。単純な不一致判定 (!==) だと、lastmodが一時的に後退するサイト
+  // (キャッシュ揺れ等) で watermark が単調増加せず、値の揺れのたびに再展開+watermark巻き戻しを
+  // 繰り返してしまう (CodeRabbit指摘)。<= 判定により watermark は前進方向にしか動かない。
+  // (新規に見つかった子と、既存だがwatermark未記録 (null) の子はゲートできないため、常に
+  // この先へ進み条件付きフェッチする。lastmodの無い子は selectChildEntries で除外済み)。
+  if (!isNewChild && previous.lastKnownUpdatedAt !== null && childLastmod <= previous.lastKnownUpdatedAt) {
     await setTargetLastChecked(ctx.db, childTarget.id, new Date(ctx.now()).toISOString());
     return;
   }
@@ -346,6 +349,8 @@ async function traverseChild(
   // 9. 子の展開 (processFeedItems / 再帰) が正常完了した後にのみ watermark を前進する
   // (at-least-once復旧のため。途中でクラッシュした場合、次回再試行時にまだ「未処理」として
   // 再度この分岐に入れるようにする。feed.ts の setTargetLastKnownUpdatedAt コメント参照)。
+  // ゲート (4.) の <= 判定により、ここへ到達する既存Targetの childLastmod は必ず既存watermark
+  // より新しいため、この保存で watermark が後退することはない (単調増加)。
   await setTargetLastKnownUpdatedAt(ctx.db, childTarget.id, childLastmod);
 }
 

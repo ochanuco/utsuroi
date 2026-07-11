@@ -97,6 +97,11 @@ export async function setTargetLastChecked(
  * *後にのみ* 呼ぶことを想定している — upsertTarget 呼び出し時点で無条件に進めてしまうと、
  * Change 挿入後・通知完了前にクラッシュしたケースの再試行が「既に処理済み」と誤認されて
  * at-least-once 復旧 (再度 insertChangeIfNew→notifyForChange を試す) が働かなくなるため。
+ *
+ * watermark は high-water mark (単調増加): 既存値より新しい場合にのみ更新する条件を SQL 側に
+ * 入れている。無条件 UPDATE だと、並行実行 (手動 run と scheduled run の競合等) が read-check-
+ * write の間に割り込んだ場合、古い値が新しい watermark を巻き戻しうるため (lost update)。
+ * 既存値が NULL の場合は常に更新する。
  */
 export async function setTargetLastKnownUpdatedAt(
   db: D1Database,
@@ -105,7 +110,10 @@ export async function setTargetLastKnownUpdatedAt(
 ): Promise<void> {
   const now = nowIso();
   await db
-    .prepare(`UPDATE targets SET last_known_updated_at = ?, updated_at = ? WHERE id = ?`)
-    .bind(lastKnownUpdatedAt, now, id)
+    .prepare(
+      `UPDATE targets SET last_known_updated_at = ?, updated_at = ?
+       WHERE id = ? AND (last_known_updated_at IS NULL OR last_known_updated_at < ?)`
+    )
+    .bind(lastKnownUpdatedAt, now, id, lastKnownUpdatedAt)
     .run();
 }

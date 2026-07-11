@@ -170,6 +170,61 @@ describe('runMonitorCheck: Sitemap Traversal incremental child expansion', () =>
     const childA2 = targets.find((t) => t.url === 'https://example.com/child-a2.xml');
     expect(childA2?.lastKnownUpdatedAt).toBe(WITHIN_CUTOFF_B);
   });
+
+  it('does not re-fetch a child whose lastmod regressed below the watermark, and keeps the watermark monotonic', async () => {
+    // lastmod が一時的に後退するサイト (キャッシュ揺れ等) で、単純な不一致判定だと再展開+
+    // watermark巻き戻しを繰り返してしまう問題の回帰テスト (CodeRabbit round-3 指摘)。
+    const { monitor } = await buildPipelineFixture({
+      sourceType: 'sitemap-index',
+      sourceUrl: 'https://example.com/traverse-root-regress.xml',
+      sourceConfig: { sitemapMode: 'traverse' },
+    });
+    const rootBody = (lastmod: string) =>
+      sitemapIndexBody([{ loc: 'https://example.com/child-regress.xml', lastmod }]);
+    const routes = (lastmod: string) => ({
+      [ROBOTS_ALLOW[0]]: ROBOTS_ALLOW[1],
+      'https://example.com/traverse-root-regress.xml': () =>
+        new Response(rootBody(lastmod), { status: 200, headers: { 'content-type': 'application/xml' } }),
+      'https://example.com/child-regress.xml': () =>
+        new Response(urlsetBody([{ loc: 'https://example.com/posts/r-1', lastmod: WITHIN_CUTOFF_B }]), {
+          status: 200,
+          headers: { 'content-type': 'application/xml' },
+        }),
+    });
+
+    // baseline: watermark = B で記録される。
+    await runMonitorCheck(
+      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      monitor.id,
+      { fetch: routedFetch(routes(WITHIN_CUTOFF_B)), hostLimiter: grantingLimiter(), now: NOW },
+    );
+
+    // 2回目: lastmod が A (< B, cutoff内) に後退 → ゲートされフェッチされず、watermarkはBのまま。
+    const { fetch: fetchStub, calls } = trackingFetch(routedFetch(routes(WITHIN_CUTOFF_A)));
+    await runMonitorCheck(
+      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      monitor.id,
+      { fetch: fetchStub, hostLimiter: grantingLimiter(), now: NOW },
+    );
+
+    expect(calls.some((u) => u.includes('child-regress.xml'))).toBe(false);
+    const targets = await listTargetsByMonitor(db(), monitor.id);
+    const child = targets.find((t) => t.url === 'https://example.com/child-regress.xml');
+    expect(child?.lastKnownUpdatedAt).toBe(WITHIN_CUTOFF_B);
+
+    // 3回目: lastmod が C (> B) に前進 → 通常どおり展開され、watermark も C へ前進する。
+    const { fetch: thirdFetch, calls: thirdCalls } = trackingFetch(routedFetch(routes(WITHIN_CUTOFF_C)));
+    await runMonitorCheck(
+      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      monitor.id,
+      { fetch: thirdFetch, hostLimiter: grantingLimiter(), now: NOW },
+    );
+    expect(thirdCalls.some((u) => u.includes('child-regress.xml'))).toBe(true);
+    const targetsAfterThird = await listTargetsByMonitor(db(), monitor.id);
+    expect(targetsAfterThird.find((t) => t.url === 'https://example.com/child-regress.xml')?.lastKnownUpdatedAt).toBe(
+      WITHIN_CUTOFF_C,
+    );
+  });
 });
 
 describe('runMonitorCheck: Sitemap Traversal does not advance a child watermark when processFeedItems truncates (ADR-0010 §5 regression)', () => {
@@ -434,23 +489,39 @@ describe('runMonitorCheck: Sitemap Traversal lastmod cutoff', () => {
     });
 
     // baseline + 2回目 (lastmod持ちの子だけ変化) の両方で、lastmod無しの子は一切フェッチされない。
-    const { fetch: baselineFetch, calls: baselineCalls } = trackingFetch(routedFetch(routes(WITHIN_CUTOFF_A)));
-    await runMonitorCheck(
-      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
-      monitor.id,
-      { fetch: baselineFetch, hostLimiter: grantingLimiter(), now: NOW },
-    );
-    const { fetch: secondFetch, calls: secondCalls } = trackingFetch(routedFetch(routes(WITHIN_CUTOFF_B)));
-    await runMonitorCheck(
-      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
-      monitor.id,
-      { fetch: secondFetch, hostLimiter: grantingLimiter(), now: NOW },
-    );
+    // あわせて、除外が missingLastmodSkipped としてカウントされ warn に出ることも検証する
+    // (フェッチされない・登録されないだけの検証だとカウント/warn経路の破損に気づけないため)。
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { fetch: baselineFetch, calls: baselineCalls } = trackingFetch(routedFetch(routes(WITHIN_CUTOFF_A)));
+      await runMonitorCheck(
+        fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+        monitor.id,
+        { fetch: baselineFetch, hostLimiter: grantingLimiter(), now: NOW },
+      );
+      const { fetch: secondFetch, calls: secondCalls } = trackingFetch(routedFetch(routes(WITHIN_CUTOFF_B)));
+      await runMonitorCheck(
+        fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+        monitor.id,
+        { fetch: secondFetch, hostLimiter: grantingLimiter(), now: NOW },
+      );
 
-    expect(baselineCalls.some((u) => u.includes('child-no-lastmod.xml'))).toBe(false);
-    expect(secondCalls.some((u) => u.includes('child-no-lastmod.xml'))).toBe(false);
-    // lastmod持ちの子は通常どおり2回目で展開される。
-    expect(secondCalls.some((u) => u.includes('child-with-lastmod.xml'))).toBe(true);
+      expect(baselineCalls.some((u) => u.includes('child-no-lastmod.xml'))).toBe(false);
+      expect(secondCalls.some((u) => u.includes('child-no-lastmod.xml'))).toBe(false);
+      // lastmod持ちの子は通常どおり2回目で展開される。
+      expect(secondCalls.some((u) => u.includes('child-with-lastmod.xml'))).toBe(true);
+
+      // 各チェックで missingLastmodSkipped: 1 が warn に記録される (mockRestore 前に検証すること)。
+      const truncationWarns = warnSpy.mock.calls
+        .map((args) => String(args[0]))
+        .filter((m) => m.includes('truncated during traversal'));
+      expect(truncationWarns).toHaveLength(2);
+      for (const m of truncationWarns) {
+        expect(m).toContain('"missingLastmodSkipped":1');
+      }
+    } finally {
+      warnSpy.mockRestore();
+    }
 
     // lastmod無しの子は Target 登録もされない (selectChildEntries で traverseChild 到達前に除外)。
     const targets = await listTargetsByMonitor(db(), monitor.id);
