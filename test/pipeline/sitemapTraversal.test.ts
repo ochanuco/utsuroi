@@ -212,7 +212,7 @@ describe('runMonitorCheck: Sitemap Traversal incremental child expansion', () =>
     const child = targets.find((t) => t.url === 'https://example.com/child-regress.xml');
     expect(child?.lastKnownUpdatedAt).toBe(WITHIN_CUTOFF_B);
 
-    // 3回目: lastmod が C (> B) に前進 → 通常どおり展開される。
+    // 3回目: lastmod が C (> B) に前進 → 通常どおり展開され、watermark も C へ前進する。
     const { fetch: thirdFetch, calls: thirdCalls } = trackingFetch(routedFetch(routes(WITHIN_CUTOFF_C)));
     await runMonitorCheck(
       fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
@@ -220,6 +220,10 @@ describe('runMonitorCheck: Sitemap Traversal incremental child expansion', () =>
       { fetch: thirdFetch, hostLimiter: grantingLimiter(), now: NOW },
     );
     expect(thirdCalls.some((u) => u.includes('child-regress.xml'))).toBe(true);
+    const targetsAfterThird = await listTargetsByMonitor(db(), monitor.id);
+    expect(targetsAfterThird.find((t) => t.url === 'https://example.com/child-regress.xml')?.lastKnownUpdatedAt).toBe(
+      WITHIN_CUTOFF_C,
+    );
   });
 });
 
