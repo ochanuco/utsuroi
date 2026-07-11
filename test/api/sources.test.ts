@@ -92,6 +92,55 @@ describe('POST /api/sources', () => {
   });
 });
 
+// ADR-0010 Phase B: sitemap/sitemap-index Source の任意 config (sitemap_mode 等)。
+describe('POST /api/sources: config (ADR-0010 Phase B sitemapMode)', () => {
+  it('creates a sitemap-index source with a traverse config (201) and echoes it back snake_case', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'sitemap-index',
+          url: 'https://example.com/sitemap-index.xml',
+          config: { sitemap_mode: 'traverse', lastmod_max_age_days: 5, max_depth: 2 },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.config).toEqual({ sitemap_mode: 'traverse', lastmod_max_age_days: 5, max_depth: 2 });
+  });
+
+  it('rejects config for a page-type source (400 config_not_applicable)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'page',
+          url: 'https://example.com/page',
+          config: { sitemap_mode: 'traverse' },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe('config_not_applicable');
+  });
+});
+
 describe('GET /api/sources', () => {
   it('lists sources by site_id', async () => {
     const { app } = buildTestApp();

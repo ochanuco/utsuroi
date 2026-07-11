@@ -17,6 +17,7 @@ import {
 import type { HostLimiter } from '../../src/shared/contracts';
 import type { Env } from '../../src/shared/env';
 import type { ChangeKind, SourceType } from '../../src/shared/types';
+import type { SourceConfig } from '../../src/db';
 
 /** テスト用に一部フィールドを差し替えた Env を作る (env は cloudflare:test の実バインディング) */
 export function fakeEnv(overrides: Partial<Env> = {}): Env {
@@ -63,12 +64,16 @@ export interface PipelineFixture {
 export interface BuildPipelineFixtureOptions {
   sourceType?: SourceType;
   sourceUrl?: string;
+  /** sitemap / sitemap-index Source の任意設定 (ADR-0010 Phase B の traverse モード指定など) */
+  sourceConfig?: SourceConfig;
   intervalSeconds?: number;
   nextRunAt?: string | null;
   monitorStatus?: MonitorRow['status'];
   /** Subscription を作らない (通知ファンアウトを検証しないテスト向け) */
   skipSubscription?: boolean;
   subscriptionChangeKind?: ChangeKind | null;
+  /** primaryOrigin を明示したい場合 (origin境界テスト向け、既定 'https://example.com') */
+  primaryOrigin?: string | null;
 }
 
 /** site -> source -> monitor + fetcher policy ('cf-http' 単一) + destination/subscription */
@@ -76,11 +81,15 @@ export async function buildPipelineFixture(
   opts: BuildPipelineFixtureOptions = {},
 ): Promise<PipelineFixture> {
   const d = db();
-  const site = await createSite(d, { name: 'Example Site', primaryOrigin: 'https://example.com' });
+  const site = await createSite(d, {
+    name: 'Example Site',
+    primaryOrigin: opts.primaryOrigin === undefined ? 'https://example.com' : opts.primaryOrigin,
+  });
   const source = await createSource(d, {
     siteId: site.id,
     type: opts.sourceType ?? 'page',
     url: opts.sourceUrl ?? 'https://example.com/',
+    config: opts.sourceConfig,
   });
   const monitor = await createMonitor(d, {
     siteId: site.id,

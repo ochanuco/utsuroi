@@ -35,11 +35,25 @@ export interface CreateSiteInput {
   primaryOrigin?: string | null;
 }
 
+/**
+ * sitemap / sitemap-index Source の任意設定 (migrations/0002_wave2.sql の sources.config 列,
+ * ADR-0010 Phase B)。他の SourceType では常に null。
+ */
+export interface SourceConfig {
+  /** 既定 'direct' (ADR-0010 モードA)。'traverse' で lastmodベース探索 (モードB) を有効化する */
+  sitemapMode?: 'direct' | 'traverse';
+  /** traverse モードの lastmod 足切り日数 (既定 DEFAULT_LASTMOD_MAX_AGE_DAYS) */
+  lastmodMaxAgeDays?: number;
+  /** traverse モードの sitemap-index 再帰深さ上限 (既定 DEFAULT_MAX_TRAVERSAL_DEPTH) */
+  maxDepth?: number;
+}
+
 export interface SourceRow {
   id: string;
   siteId: string;
   type: SourceType;
   url: string;
+  config: SourceConfig | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -49,6 +63,7 @@ export interface CreateSourceInput {
   siteId: string;
   type: SourceType;
   url: string;
+  config?: SourceConfig;
 }
 
 export interface MonitorRow {

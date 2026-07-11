@@ -1,5 +1,11 @@
 /**
- * rss / atom / sitemap / sitemap-index の Item/子Sitemap 処理 (SPEC §6, §17.8-9)。
+ * rss / atom の Item 処理 (SPEC §6, §17.8-9)。
+ *
+ * sitemap / sitemap-index Source は既定で processSitemapDirect (ADR-0010 Phase A) へ、
+ * config.sitemapMode === 'traverse' なら processSitemapTraversal (Phase B,
+ * src/pipeline/sitemapTraversal.ts) へディスパッチされ、本ファイルの processFeedContent は
+ * もはや呼ばれない (runCheck.ts 参照)。processFeedItems はいずれの sitemap 経路からも
+ * 実URLの Target化・new/updated 検知・通知に再利用されるため、本体は残す。
  *
  * 冪等性の要: dedupeKey が既知の値と同一なら insertChangeIfNew は no-op を返す。
  * - 新規 Target 発見時: dedupeKey = stableKey → 'new' Change (2回目以降の同一 stableKey は無視)
@@ -35,8 +41,7 @@ import type { FeedItem } from '../shared/contracts';
 import type { FetchSuccess } from '../shared/contracts';
 import { sha256Hex } from '../shared/hash';
 import { extractCharsetFromContentType } from '../normalize';
-import { checkRobots } from '../robots';
-import { checkUrlForSsrf, resolveAndCheck } from '../net';
+import { checkUrlForSsrf } from '../net';
 import {
   createDeliveryIfNew,
   createSnapshot,
@@ -45,14 +50,10 @@ import {
   upsertTarget,
   setTargetLastChecked,
   setTargetLastKnownUpdatedAt,
-  getLatestSnapshotForTarget,
-  getRobotsMode,
   type ChangeRow,
   type TargetRow,
 } from '../db';
 import { bodyKey, putIfAbsent } from './r2';
-import { createD1RobotsCache } from './robotsCache';
-import { fetchTargetThroughPolicy } from './fetchTarget';
 import type { CheckContext } from './types';
 
 /** Sitemap Index 配下の子 Sitemap の取得上限 (1回のチェックあたり) */
@@ -66,7 +67,7 @@ export const MAX_CHILD_SITEMAPS = 20;
  */
 export const MAX_FEED_ITEMS_PER_CHECK = 2000;
 
-interface ExistingTargetWatermark {
+export interface ExistingTargetWatermark {
   exists: boolean;
   /** upsertTarget を呼ぶ前の (=このチェックで item.updatedAt を書き込む前の) watermark 値 */
   lastKnownUpdatedAt: string | null;
@@ -75,8 +76,9 @@ interface ExistingTargetWatermark {
 /**
  * 既存 Target の有無と、upsert 前時点の last_known_updated_at watermark を1クエリで取得する。
  * isNew 判定と 'updated' Change 判定 (watermark との比較) の両方に使う (migrations/0005)。
+ * sitemapTraversal.ts (ADR-0010 Phase B) の子Sitemap watermark ゲートからも再利用するため export する。
  */
-async function getExistingTargetWatermark(
+export async function getExistingTargetWatermark(
   db: D1Database,
   monitorId: string,
   url: string,
@@ -112,18 +114,27 @@ async function notifyForChange(ctx: CheckContext, change: ChangeRow): Promise<vo
   }
 }
 
+/** processFeedItems の戻り値。呼び出し側 (sitemapTraversal.ts) が打ち切り件数を検査できるようにする */
+export interface ProcessFeedItemsResult {
+  /** MAX_FEED_ITEMS_PER_CHECK (または注入値) 超過で処理しなかった件数。打ち切りが無ければ 0 */
+  truncatedCount: number;
+}
+
 /**
  * rss/atom/sitemap の item 一覧を Target 化し、新規/更新を検出して通知する。
  *
  * @param maxItems 1回の呼び出しで処理する item 数の上限 (既定 MAX_FEED_ITEMS_PER_CHECK)。
  *   超過分はスキップし (target/change を作らない)、次回以降のチェックに持ち越される。
  *   テストで小さい値を注入できるよう引数化している。
+ * @returns truncatedCount。rss/atom 経路 (processFeedContent) は戻り値を無視してよいが、
+ *   sitemapTraversal.ts の traverseChild は「打ち切りが発生した子は watermark を進めない」
+ *   判断にこの値を使う (ADR-0010 §5「超過分は次回以降のチェックに持ち越す」に従うため)。
  */
 export async function processFeedItems(
   ctx: CheckContext,
   items: FeedItem[],
   maxItems: number = MAX_FEED_ITEMS_PER_CHECK,
-): Promise<void> {
+): Promise<ProcessFeedItemsResult> {
   const nowIso = new Date(ctx.now()).toISOString();
 
   // monitor の初回チェックか否か。ctx.monitor は runMonitorCheck 冒頭で読み込まれた
@@ -133,10 +144,11 @@ export async function processFeedItems(
 
   const truncated = items.length > maxItems;
   const toProcess = truncated ? items.slice(0, maxItems) : items;
+  const truncatedCount = truncated ? items.length - toProcess.length : 0;
   if (truncated) {
     console.warn(
       `[feed] processFeedItems: monitor=${ctx.monitor.id} item count ${items.length} exceeds ` +
-        `maxItems=${maxItems}; processing first ${toProcess.length}, skipping ${items.length - toProcess.length} ` +
+        `maxItems=${maxItems}; processing first ${toProcess.length}, skipping ${truncatedCount} ` +
         `(carried over to a future check)`,
     );
   }
@@ -212,12 +224,16 @@ export async function processFeedItems(
       await setTargetLastKnownUpdatedAt(ctx.db, target.id, item.updatedAt);
     }
   }
+
+  return { truncatedCount };
 }
 
 /**
- * feed 系 Source (rss/atom/sitemap/sitemap-index) の Source URL 本体取得後の処理。
- * 本文を R2 へ保存し (履歴用、SPEC §13)、parseSource で items/childSitemaps を取り出して
- * processFeedItems / processSitemapIndexChildren へ委譲する。
+ * feed 系 Source (rss/atom) の Source URL 本体取得後の処理。
+ * 本文を R2 へ保存し (履歴用、SPEC §13)、parseSource で items を取り出して processFeedItems へ
+ * 委譲する。sitemap/sitemap-index は ADR-0010 (Phase A: processSitemapDirect, Phase B:
+ * processSitemapTraversal) に完全に置き換わっており、runCheck.ts はこの関数を rss/atom
+ * source にのみ呼ぶ (呼び出し側のディスパッチ判定を参照)。
  */
 export async function processFeedContent(
   ctx: CheckContext,
@@ -258,81 +274,5 @@ export async function processFeedContent(
     r2Key: bodyKey(rawHash),
   });
 
-  if (ctx.source.type === 'sitemap-index') {
-    await processSitemapIndexChildren(ctx, parsed.childSitemaps);
-    if (parsed.items.length > 0) await processFeedItems(ctx, parsed.items);
-  } else {
-    await processFeedItems(ctx, parsed.items);
-  }
-}
-
-/**
- * Sitemap Index 配下の子 Sitemap を取得・展開する。
- * 設計判断 (ADR-0005 Guardrail「同一originは取得間で追加leaseは不要とする」に基づく簡略化):
- * - 子 Sitemap の取得には追加の HostObject lease を取らない (親の取得で確保した枠内とみなす)。
- * - 子ごとに SSRF / robots を個別評価するが、disallowed/blocked の子は Monitor 全体を
- *   Policy Stop せずスキップする (Source URL 自体は既に許可されているため)。
- * - 孫 sitemap-index (入れ子) の再帰展開は MVP スコープ外。
- */
-export async function processSitemapIndexChildren(
-  ctx: CheckContext,
-  childSitemaps: string[],
-): Promise<void> {
-  const children = childSitemaps.slice(0, MAX_CHILD_SITEMAPS);
-
-  for (const childUrl of children) {
-    const staticCheck = checkUrlForSsrf(childUrl);
-    if (!staticCheck.allowed) continue;
-    const dynamicCheck = await resolveAndCheck(childUrl, { fetchImpl: ctx.fetchImpl });
-    if (!dynamicCheck.allowed) continue;
-
-    let origin: string;
-    try {
-      origin = new URL(childUrl).origin;
-    } catch {
-      continue;
-    }
-
-    const robotsMode = await getRobotsMode(ctx.db, ctx.site.id, origin);
-    const decision = await checkRobots(origin, childUrl, {
-      fetchImpl: ctx.fetchImpl,
-      userAgent: ctx.env.USER_AGENT,
-      cache: createD1RobotsCache(ctx.db),
-      now: ctx.now,
-    });
-    if (decision.verdict === 'disallowed' && robotsMode === 'enforce') continue;
-
-    const childTarget = await upsertTarget(ctx.db, {
-      monitorId: ctx.monitor.id,
-      url: childUrl,
-      discoveredFrom: 'sitemap-index',
-    });
-
-    const latest = await getLatestSnapshotForTarget(ctx.db, childTarget.id);
-    const { outcome } = await fetchTargetThroughPolicy(ctx, childTarget.id, childUrl, {
-      etag: latest?.etag ?? null,
-      lastModified: latest?.lastModified ?? null,
-    });
-    // フェッチ自体が失敗した場合のみ last_checked_at を更新せずスキップする。
-    // 304 Not Modified は「子 Sitemap の正常なチェック」なので last_checked_at は更新する
-    // (パースする新規本文が無いため items 処理だけスキップする)。
-    if (!outcome.ok) continue;
-    const checkedAtIso = new Date(ctx.now()).toISOString();
-    if (outcome.notModified || !outcome.body) {
-      await setTargetLastChecked(ctx.db, childTarget.id, checkedAtIso);
-      continue;
-    }
-
-    let parsed;
-    try {
-      parsed = parseSource('sitemap', outcome.body, {
-        baseUrl: childUrl,
-        headerCharset: extractCharsetFromContentType(outcome.contentType),
-      });
-    } catch {
-      continue;
-    }
-    await setTargetLastChecked(ctx.db, childTarget.id, checkedAtIso);
-    await processFeedItems(ctx, parsed.items);
-  }
+  await processFeedItems(ctx, parsed.items);
 }
