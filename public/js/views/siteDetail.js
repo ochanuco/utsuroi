@@ -254,12 +254,20 @@ function renderSourceCard(source, monitorsForSource, monitorsFetchFailed, onSour
     }
   };
 
-  card.appendChild(
-    el('div', { class: 'source-card-header' }, [
-      el('span', { class: 'badge', text: source.type }),
-      el('span', { class: 'source-card-url', text: source.url }),
-    ])
-  );
+  // sitemap系は同一URLでモード違いのSourceが並びうるため、モードをバッジで明示する
+  // (ADR-0010: 既定 Direct / opt-in lastmod探索。API の source.config.sitemap_mode を参照)。
+  const headerChildren = [el('span', { class: 'badge', text: source.type })];
+  if (source.type === 'sitemap' || source.type === 'sitemap-index') {
+    const isTraverse = source.config && source.config.sitemap_mode === 'traverse';
+    headerChildren.push(
+      el('span', {
+        class: `badge ${isTraverse ? 'badge-mode-traverse' : 'badge-mode-direct'}`,
+        text: isTraverse ? 'lastmod探索' : 'Direct',
+      })
+    );
+  }
+  headerChildren.push(el('span', { class: 'source-card-url', text: source.url }));
+  card.appendChild(el('div', { class: 'source-card-header' }, headerChildren));
 
   if (monitorsFetchFailed) {
     card.appendChild(
