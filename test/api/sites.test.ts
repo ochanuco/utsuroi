@@ -154,6 +154,19 @@ describe('PATCH /api/sites/:id (rename)', () => {
     expect(((await getRes.json()) as any).name).toBe(originalName);
   });
 
+  it('trims surrounding whitespace from a valid name before storing (zod .trim())', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite(app, uniqueName('Trim Me'));
+    const trimmed = uniqueName('Trimmed');
+    const res = await app.request(
+      `/api/sites/${site.id}`,
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ name: `  ${trimmed}  ` }) },
+      testEnv()
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).name).toBe(trimmed);
+  });
+
   it('treats renaming to the same name as a no-op (200, no audit event)', async () => {
     const { app } = buildTestApp();
     const name = uniqueName('Same Name');

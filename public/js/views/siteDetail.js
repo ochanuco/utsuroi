@@ -934,7 +934,8 @@ async function renderRobotsOverridesSection(container, site) {
 function renderSiteTitle(site, onRenamed) {
   const wrap = el('div', { class: 'site-title-row' });
   const heading = el('h2', { text: `Site: ${site.name}` });
-  const errorEl = el('p', { class: 'error hidden' });
+  // role="alert" でバリデーション/失敗メッセージをスクリーンリーダーに即時通知する
+  const errorEl = el('p', { class: 'error hidden', attrs: { role: 'alert' } });
 
   const nameInput = el('input', {
     attrs: { type: 'text', required: true, value: site.name, 'aria-label': 'Site名' },
