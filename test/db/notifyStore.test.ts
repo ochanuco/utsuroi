@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createD1NotifyStore, createDeliveryIfNew, getDelivery, insertChangeIfNew } from '../../src/db';
+import { archiveDestination, createD1NotifyStore, createDeliveryIfNew, getDelivery, insertChangeIfNew } from '../../src/db';
 import { buildFixture, db, FIXTURE_WEBHOOK_URL, TEST_WEBHOOK_ENC_KEY } from './helpers';
 
 describe('createD1NotifyStore (implements src/shared/contracts.ts NotifyStore)', () => {
@@ -102,6 +102,30 @@ describe('createD1NotifyStore (implements src/shared/contracts.ts NotifyStore)',
     // be 'pending' so that a later call (once the key is configured) can still claim it.
     const row = await getDelivery(d, delivery.row.id);
     expect(row?.status).toBe('pending');
+  });
+
+  it('marks a delivery dead (without attempting decryption) and returns null when its destination was archived after enqueue (ADR-0012)', async () => {
+    const d = db();
+    const store = createD1NotifyStore(d, TEST_WEBHOOK_ENC_KEY);
+    const { monitor, target, destination } = await buildFixture(d);
+    const change = await insertChangeIfNew(d, {
+      monitorId: monitor.id,
+      targetId: target.id,
+      targetUrl: target.url,
+      kind: 'updated',
+      dedupeKey: 'sha256:notify-archived',
+    });
+    const delivery = await createDeliveryIfNew(d, change.row.id, destination.id);
+
+    // アーカイブ前に enqueue 済みだったケースを模す (webhook_url は既に破棄されている)。
+    await archiveDestination(d, destination.id);
+
+    const pending = await store.getPendingDelivery(delivery.row.id);
+    expect(pending).toBeNull();
+
+    const row = await getDelivery(d, delivery.row.id);
+    expect(row?.status).toBe('dead');
+    expect(row?.lastError).toBe('destination archived');
   });
 
   it('atomically claims a delivery: a second concurrent getPendingDelivery call sees it as already claimed', async () => {

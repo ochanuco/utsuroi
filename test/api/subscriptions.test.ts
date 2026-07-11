@@ -88,4 +88,25 @@ describe('POST/GET/DELETE /api/subscriptions', () => {
     const res = await app.request('/api/subscriptions/nope', { method: 'DELETE', headers: authHeaders() }, testEnv());
     expect(res.status).toBe(404);
   });
+
+  it('rejects creating a subscription against an archived destination (400 destination_archived, ADR-0012)', async () => {
+    const { app } = buildTestApp();
+    const destination = await makeDestination();
+
+    const archiveRes = await app.request(
+      `/api/destinations/${destination.id}/archive`,
+      { method: 'POST', headers: authHeaders() },
+      testEnv()
+    );
+    expect(archiveRes.status).toBe(200);
+
+    const res = await app.request(
+      '/api/subscriptions',
+      { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ destination_id: destination.id }) },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json() as any;
+    expect(body.error.code).toBe('destination_archived');
+  });
 });

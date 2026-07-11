@@ -4,7 +4,14 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Env } from '../../shared/env';
-import { createDestination, encryptWebhookUrl, getDestination, listDestinations } from '../../db';
+import {
+  archiveDestination,
+  createDestination,
+  encryptWebhookUrl,
+  getDestination,
+  listDestinations,
+  recordAuditEvent,
+} from '../../db';
 import { checkUrlForSsrf } from '../../net';
 import { isDiscordWebhookHost } from '../../notify/discord';
 import { badRequest, conflict, notFound, serviceUnavailable } from '../errors';
@@ -95,12 +102,36 @@ export function destinationsRoutes() {
       if (isForeignKeyConstraintError(err)) {
         throw conflict(
           'destination_has_delivery_history',
-          'cannot delete a destination that still has delivery history',
+          'cannot delete a destination that still has delivery history; ' +
+            `archive it instead (POST /api/destinations/${id}/archive)`,
         );
       }
       throw err;
     }
     return c.json({ deleted: true });
+  });
+
+  // ADR-0012: 配送履歴を保ったまま Destination を片付ける soft delete。webhook_url を破棄し
+  // (復元不可)、従属 subscriptions を削除する。冪等: アーカイブ済みへの再実行も 200 を返す。
+  router.post('/:id/archive', async (c) => {
+    const id = c.req.param('id');
+    const destination = await getDestination(c.env.DB, id);
+    if (!destination) throw notFound('destination_not_found', 'destination not found');
+
+    const wasAlreadyArchived = destination.archivedAt !== null;
+    const archived = await archiveDestination(c.env.DB, id);
+    if (!archived) throw notFound('destination_not_found', 'destination not found');
+
+    if (!wasAlreadyArchived) {
+      await recordAuditEvent(c.env.DB, {
+        actor: 'admin',
+        action: 'destination.archive',
+        subject: id,
+        payload: { destinationId: id },
+      });
+    }
+
+    return c.json(serializeDestination(archived));
   });
 
   return router;

@@ -325,6 +325,8 @@ export interface DestinationRow {
   name: string;
   webhookUrl: string;
   enabled: boolean;
+  /** アーカイブ (soft delete, ADR-0012) 日時。未アーカイブなら null */
+  archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }

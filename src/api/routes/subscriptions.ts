@@ -34,6 +34,9 @@ export function subscriptionsRoutes() {
 
     const destination = await getDestination(c.env.DB, body.destination_id);
     if (!destination) throw notFound('destination_not_found', 'destination not found');
+    if (destination.archivedAt !== null) {
+      throw badRequest('destination_archived', 'cannot subscribe to an archived destination');
+    }
 
     if (body.site_id) {
       const site = await getSite(c.env.DB, body.site_id);

@@ -166,14 +166,19 @@ export function serializeDestination(row: DestinationRow) {
   // row.webhookUrl は暗号化保存フォーマット (`enc:v1:...`, src/db/webhookCrypto.ts) が前提。
   // マスク文字列は暗号化時にその中へ埋め込み済みのため、表示のためだけに鍵で復号する必要はない。
   // 万一 (テストフィクスチャ等で) 平文が渡ってきた場合は従来通りその場でマスクする。
-  const webhookUrlMasked = isEncryptedWebhookUrl(row.webhookUrl)
-    ? extractMaskedWebhookUrl(row.webhookUrl)
-    : maskWebhookUrl(row.webhookUrl);
+  // アーカイブ済み (ADR-0012) は webhook_url が空文字に破棄されており、
+  // マスク表示すべき値そのものが存在しないため null を返す。
+  const webhookUrlMasked = row.webhookUrl === ''
+    ? null
+    : isEncryptedWebhookUrl(row.webhookUrl)
+      ? extractMaskedWebhookUrl(row.webhookUrl)
+      : maskWebhookUrl(row.webhookUrl);
   return {
     id: row.id,
     name: row.name,
     webhook_url_masked: webhookUrlMasked,
     enabled: row.enabled,
+    archived_at: row.archivedAt,
     created_at: row.createdAt,
     updated_at: row.updatedAt,
   };
