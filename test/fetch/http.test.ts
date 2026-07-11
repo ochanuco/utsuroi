@@ -33,6 +33,8 @@ describe('httpFetch: request construction', () => {
     expect(capturedInit?.redirect).toBe('manual');
     const headers = capturedInit?.headers as Headers;
     expect(headers.get('user-agent')).toBe('UtsuroiBot/0.1');
+    expect(headers.get('accept-language')).toBe('ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7');
+    expect(headers.get('referer')).toBe('https://example.com/page');
     expect(headers.get('x-custom')).toBe('abc');
     expect(headers.get('if-none-match')).toBe('"v1"');
     expect(headers.get('if-modified-since')).toBe('Wed, 01 Jan 2026 00:00:00 GMT');
