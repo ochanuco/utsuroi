@@ -28,6 +28,18 @@ export async function getSite(db: D1Database, id: string): Promise<SiteRow | nul
   return row ? mapRow(row) : null;
 }
 
+/**
+ * Site名を変更する。対象が存在しない場合は null を返す (呼び出し側で404にする)。
+ */
+export async function updateSiteName(db: D1Database, id: string, name: string): Promise<SiteRow | null> {
+  const result = await db
+    .prepare(`UPDATE sites SET name = ?, updated_at = ? WHERE id = ?`)
+    .bind(name, nowIso(), id)
+    .run();
+  if ((result.meta?.changes ?? 0) === 0) return null;
+  return getSite(db, id);
+}
+
 export async function listSites(
   db: D1Database,
   pagination?: { limit: number; offset: number }

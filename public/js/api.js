@@ -86,6 +86,7 @@ export const api = {
   getText: (path) => request(path, { raw: true }),
   post: (path, body) => request(path, { method: 'POST', body: body ?? {} }),
   put: (path, body) => request(path, { method: 'PUT', body: body ?? {} }),
+  patch: (path, body) => request(path, { method: 'PATCH', body: body ?? {} }),
   del: (path) => request(path, { method: 'DELETE' }),
 };
 

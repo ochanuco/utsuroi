@@ -90,6 +90,99 @@ describe('POST/GET /api/sites', () => {
   });
 });
 
+describe('PATCH /api/sites/:id (rename)', () => {
+  async function makeSite(app: ReturnType<typeof buildTestApp>['app'], name: string) {
+    const res = await app.request(
+      '/api/sites',
+      { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ name }) },
+      testEnv()
+    );
+    // 作成に失敗していたら後続の PATCH テストが誤った前提で走るため、ここで確定させる。
+    expect(res.status).toBe(201);
+    const site = await res.json() as any;
+    expect(site.id).toBeDefined();
+    return site;
+  }
+
+  it('renames the site, reflects it on GET, and records a site.rename audit event', async () => {
+    const { app } = buildTestApp();
+    const oldName = uniqueName('Old Name');
+    const newName = uniqueName('New Name');
+    const site = await makeSite(app, oldName);
+
+    const res = await app.request(
+      `/api/sites/${site.id}`,
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ name: newName }) },
+      testEnv()
+    );
+    expect(res.status).toBe(200);
+    const updated = await res.json() as any;
+    expect(updated.name).toBe(newName);
+
+    const getRes = await app.request(`/api/sites/${site.id}`, { headers: authHeaders() }, testEnv());
+    expect(((await getRes.json()) as any).name).toBe(newName);
+
+    const audits = await listAuditEventsBySubject(db(), site.id);
+    const rename = audits.find((a) => a.action === 'site.rename');
+    expect(rename).toBeDefined();
+    expect(rename?.payload).toEqual({ from: oldName, to: newName });
+  });
+
+  it('returns 404 for an unknown site id', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request(
+      '/api/sites/does-not-exist',
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ name: 'x' }) },
+      testEnv()
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects an empty or whitespace-only name (400) and keeps the original name', async () => {
+    const { app } = buildTestApp();
+    const originalName = uniqueName('Keep Name');
+    const site = await makeSite(app, originalName);
+    for (const name of ['', '   ']) {
+      const res = await app.request(
+        `/api/sites/${site.id}`,
+        { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ name }) },
+        testEnv()
+      );
+      expect(res.status).toBe(400);
+    }
+    const getRes = await app.request(`/api/sites/${site.id}`, { headers: authHeaders() }, testEnv());
+    expect(((await getRes.json()) as any).name).toBe(originalName);
+  });
+
+  it('trims surrounding whitespace from a valid name before storing (zod .trim())', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite(app, uniqueName('Trim Me'));
+    const trimmed = uniqueName('Trimmed');
+    const res = await app.request(
+      `/api/sites/${site.id}`,
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ name: `  ${trimmed}  ` }) },
+      testEnv()
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).name).toBe(trimmed);
+  });
+
+  it('treats renaming to the same name as a no-op (200, no audit event)', async () => {
+    const { app } = buildTestApp();
+    const name = uniqueName('Same Name');
+    const site = await makeSite(app, name);
+    const res = await app.request(
+      `/api/sites/${site.id}`,
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ name }) },
+      testEnv()
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).name).toBe(name);
+    const audits = await listAuditEventsBySubject(db(), site.id);
+    expect(audits.filter((a) => a.action === 'site.rename')).toHaveLength(0);
+  });
+});
+
 describe('PUT/GET /api/sites/:id/fetcher-policy', () => {
   it('accepts a valid policy and round-trips it', async () => {
     const { app } = buildTestApp();
