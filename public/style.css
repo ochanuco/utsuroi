@@ -367,6 +367,57 @@ pre.code-block {
   padding: 12px 0;
 }
 
+/* --- Source + 監視状態 統合カード --- */
+.source-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+.source-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.source-card-url {
+  font-family: var(--mono);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.source-monitor-line {
+  margin: 4px 0;
+}
+.source-stop-reason {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+}
+.source-card-actions {
+  margin-top: 8px;
+}
+.source-delete-hint {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+}
+.source-add-form {
+  margin-top: 16px;
+}
+.source-add-form h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+.inline-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 4px 0;
+}
+.source-interval-input {
+  width: 70px;
+}
+
 .loading {
   color: var(--muted);
   padding: 12px 0;

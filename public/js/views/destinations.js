@@ -18,7 +18,7 @@ async function renderSubscriptionsFor(container, destinationId, sites) {
       el('thead', {}, [
         el('tr', {}, [
           el('th', { text: 'Site' }),
-          el('th', { text: 'Monitor' }),
+          el('th', { text: '監視' }),
           el('th', { text: 'Tag' }),
           el('th', { text: 'Kind' }),
           el('th', {}),
@@ -45,7 +45,7 @@ async function renderSubscriptionsFor(container, destinationId, sites) {
       tbody.appendChild(
         el('tr', {}, [
           el('td', { text: sub.site_id ?? '(全Site)' }),
-          el('td', { text: sub.monitor_id ?? '(全Monitor)' }),
+          el('td', { text: sub.monitor_id ?? '(全監視)' }),
           el('td', { text: sub.tag ?? '—' }),
           el('td', { text: sub.kind ?? '(全種別)' }),
           el('td', {}, [delButton]),
@@ -64,7 +64,7 @@ async function renderSubscriptionsFor(container, destinationId, sites) {
     el('option', { attrs: { value: '' }, text: '(全Site)' }),
     ...sites.map((site) => el('option', { attrs: { value: site.id }, text: site.name })),
   ]);
-  const monitorIdInput = el('input', { attrs: { type: 'text', placeholder: '(任意) monitor_id' } });
+  const monitorIdInput = el('input', { attrs: { type: 'text', placeholder: '(任意) 監視ID (monitor_id)' } });
   const tagInput = el('input', { attrs: { type: 'text', placeholder: '(任意) tag' } });
   const kindSelect = el(
     'select',
@@ -107,7 +107,7 @@ async function renderSubscriptionsFor(container, destinationId, sites) {
       },
     },
   });
-  form.appendChild(fieldRow([field('Site', siteSelect), field('Monitor ID', monitorIdInput), field('Tag', tagInput), field('Kind', kindSelect)]));
+  form.appendChild(fieldRow([field('Site', siteSelect), field('監視ID', monitorIdInput), field('Tag', tagInput), field('Kind', kindSelect)]));
   form.appendChild(el('button', { attrs: { type: 'submit' }, text: '購読を作成' }));
   form.appendChild(errorEl);
   container.appendChild(form);
