@@ -166,7 +166,17 @@ label {
 }
 .field-row > .field {
   flex: 1;
-  min-width: 200px;
+  min-width: 160px;
+}
+/* ラッパー (.field) は flex で伸びるのに中の入力が固有幅のままだと、列内に
+   無駄な余白ができて間延びして見えるため、行内の入力は列幅いっぱいに揃える。 */
+.field-row > .field > input,
+.field-row > .field > select {
+  width: 100%;
+}
+/* URLのような長い値の入力列を優先的に広げるための修飾クラス (field() の戻り値に付与する) */
+.field-row > .field-grow {
+  flex: 2.5;
 }
 .checkbox-field {
   display: flex;
