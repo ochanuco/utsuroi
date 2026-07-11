@@ -11,3 +11,4 @@
 | [0007](0007-discord-notification.md) | Discord WebhookをDestinationとしてQueue配送する | Accepted |
 | [0008](0008-robots-txt-compliance.md) | robots.txtを遵守し禁止時はMonitorをPolicy Stopする | Accepted |
 | [0009](0009-explicit-robots-override.md) | Siteとorigin単位の明示的robots.txt Overrideを許可する | Accepted |
+| [0010](0010-detection-chain-and-source-promotion.md) | 検知チェーンとSource自動昇格 | Proposed |
