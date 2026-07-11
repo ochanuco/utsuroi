@@ -347,6 +347,29 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
   const itemSelectorField = field('アイテムセレクタ', itemSelectorInput);
   itemSelectorField.classList.add('hidden');
 
+  // page × 本文差分 のときだけ表示する、DOM抽出/除外セレクタ (任意・カンマ区切りで複数可)。
+  // include: このセレクタの範囲だけを正規化・diff対象にする / ignore: この範囲を除外する
+  // (normalize.ts の includeSelectors/ignoreSelectors。API は PR #17 で開通済み、その UI 入口)。
+  const includeSelectorsInput = el('input', {
+    attrs: { type: 'text', placeholder: '#main, article（空欄なら全体）' },
+  });
+  const includeSelectorsField = field('抽出セレクタ (この範囲だけ監視・任意)', includeSelectorsInput);
+  includeSelectorsField.classList.add('hidden');
+  const ignoreSelectorsInput = el('input', {
+    attrs: { type: 'text', placeholder: '.ads, #sidebar（任意）' },
+  });
+  const ignoreSelectorsField = field('除外セレクタ (任意)', ignoreSelectorsInput);
+  ignoreSelectorsField.classList.add('hidden');
+
+  /** カンマ区切り入力を trim 済み配列へ (空要素は捨てる)。空なら null */
+  function parseSelectorList(raw) {
+    const list = raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    return list.length > 0 ? list : null;
+  }
+
   function isSitemapType(type) {
     return type === 'sitemap' || type === 'sitemap-index';
   }
@@ -374,10 +397,17 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
     modeField.classList.remove('hidden');
   }
 
-  /** page × 新着検知 (modeSelect.value === 'extract') のときだけアイテムセレクタ入力を表示する */
+  /**
+   * page のモードに応じた追加入力の表示切替:
+   * 新着検知 → アイテムセレクタ / 本文差分 → DOM抽出・除外セレクタ (どちらも page 以外では非表示)
+   */
   function syncItemSelectorVisibility() {
-    const show = isPageType(typeSelect.value) && modeSelect.value === 'extract';
-    itemSelectorField.classList.toggle('hidden', !show);
+    const isPage = isPageType(typeSelect.value);
+    const showExtract = isPage && modeSelect.value === 'extract';
+    const showContent = isPage && modeSelect.value === 'content';
+    itemSelectorField.classList.toggle('hidden', !showExtract);
+    includeSelectorsField.classList.toggle('hidden', !showContent);
+    ignoreSelectorsField.classList.toggle('hidden', !showContent);
   }
 
   function syncModeVisibility() {
@@ -410,6 +440,15 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
             return;
           }
           sourceBody.config = { page_mode: 'extract', extract: { item_selector: itemSelector } };
+        } else if (isPageType(typeSelect.value) && modeSelect.value === 'content') {
+          // 本文差分の DOM 抽出/除外セレクタ (任意)。両方空なら config 自体を付けない (従来どおり)。
+          const includeSelectors = parseSelectorList(includeSelectorsInput.value);
+          const ignoreSelectors = parseSelectorList(ignoreSelectorsInput.value);
+          if (includeSelectors || ignoreSelectors) {
+            sourceBody.config = {};
+            if (includeSelectors) sourceBody.config.include_selectors = includeSelectors;
+            if (ignoreSelectors) sourceBody.config.ignore_selectors = ignoreSelectors;
+          }
         }
 
         let source;
@@ -472,6 +511,8 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
       field('監視間隔 (分・空欄なら監視なし)', intervalInput),
     ])
   );
+  // 本文差分のDOM抽出/除外セレクタは任意項目のため2行目に置く (1行目はモードに応じた必須系のみ)。
+  form.appendChild(fieldRow([includeSelectorsField, ignoreSelectorsField]));
   form.appendChild(el('button', { attrs: { type: 'submit' }, text: 'Sourceを追加' }));
   form.appendChild(errorEl);
   wrap.appendChild(form);
