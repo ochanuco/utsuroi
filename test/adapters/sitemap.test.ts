@@ -76,18 +76,34 @@ describe('parseSitemap', () => {
 });
 
 describe('parseSitemapIndex', () => {
-  it('parses sitemapindex into childSitemaps with no items', () => {
+  it('parses sitemapindex into childSitemaps, and mirrors the same loc+lastmod into items (ADR-0010 Phase A: Sitemap Direct needs items for both urlset and sitemapindex)', () => {
     const xml = `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
       <sitemap><loc>/sitemap-1.xml</loc><lastmod>2024-01-01</lastmod></sitemap>
       <sitemap><loc>https://other.example.com/sitemap-2.xml</loc></sitemap>
     </sitemapindex>`;
     const result = parseSitemapIndex(enc(xml), BASE);
     expect(result.kind).toBe('sitemap-index');
-    expect(result.items).toEqual([]);
     expect(result.childSitemaps).toEqual([
       'https://example.com/sitemap-1.xml',
       'https://other.example.com/sitemap-2.xml',
     ]);
+    expect(result.items).toHaveLength(2);
+    expect(result.items[0]!.stableKey).toBe('https://example.com/sitemap-1.xml');
+    expect(result.items[0]!.url).toBe('https://example.com/sitemap-1.xml');
+    expect(result.items[0]!.updatedAt).toBe(new Date('2024-01-01').toISOString());
+    expect(result.items[1]!.stableKey).toBe('https://other.example.com/sitemap-2.xml');
+    expect(result.items[1]!.updatedAt).toBeNull();
+  });
+
+  it('dedupes sitemap entries sharing the same resolved loc, keeping the first occurrence for both childSitemaps and items', () => {
+    const xml = `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+      <sitemap><loc>https://example.com/dup.xml</loc><lastmod>2024-01-01</lastmod></sitemap>
+      <sitemap><loc>https://example.com/dup.xml</loc><lastmod>2024-02-02</lastmod></sitemap>
+    </sitemapindex>`;
+    const result = parseSitemapIndex(enc(xml), BASE);
+    expect(result.childSitemaps).toEqual(['https://example.com/dup.xml']);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]!.updatedAt).toBe(new Date('2024-01-01').toISOString());
   });
 
   it('throws AdapterParseError(unexpected_root) for a non-sitemapindex root', () => {
@@ -109,7 +125,8 @@ describe('parseSource sitemap auto-detection', () => {
     </sitemapindex>`;
     const result = parseSource('sitemap', enc(xml), BASE);
     expect(result.kind).toBe('sitemap-index');
-    expect(result.items).toEqual([]);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]!.url).toBe('https://example.com/child.xml');
     expect(result.childSitemaps).toEqual(['https://example.com/child.xml']);
   });
 

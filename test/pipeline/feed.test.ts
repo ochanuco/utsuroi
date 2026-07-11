@@ -114,138 +114,13 @@ describe('runMonitorCheck: rss feed (SPEC §17.8: no duplicate entry notificatio
   });
 });
 
-const SITEMAP_INDEX_BODY = `<?xml version="1.0" encoding="UTF-8"?>
-<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <sitemap><loc>https://example.com/sitemap-child.xml</loc></sitemap>
-</sitemapindex>`;
-
-// lastmod をあえて付けていない: 'updated' kind の dedupe は既存の実装をそのまま維持する対象で
-// (SPEC の対象外) baseline 導入後の初回以降チェックにおける 'new' 検出だけをこのテストで
-// 切り分けて検証するため。lastmod の扱いは 'duplicate dedupeKey recovery' テストで別途検証する。
-const CHILD_SITEMAP_BODY = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://example.com/a</loc></url>
-  <url><loc>https://example.com/b</loc></url>
-</urlset>`;
-
-describe('runMonitorCheck: sitemap-index (SPEC §17.9: detects new URLs under a Sitemap Index; feed baseline fix)', () => {
-  it('registers all URLs as baseline Targets with zero Changes on the first check, then detects only a newly-added URL on the next check', async () => {
-    const { monitor } = await buildPipelineFixture({
-      sourceType: 'sitemap-index',
-      sourceUrl: 'https://example.com/sitemap-index.xml',
-    });
-    const fetchStubV1 = routedFetch({
-      'https://example.com/robots.txt': () => new Response('User-agent: *\nAllow: /', { status: 200 }),
-      'https://example.com/sitemap-index.xml': () =>
-        new Response(SITEMAP_INDEX_BODY, { status: 200, headers: { 'content-type': 'application/xml' } }),
-      'https://example.com/sitemap-child.xml': () =>
-        new Response(CHILD_SITEMAP_BODY, { status: 200, headers: { 'content-type': 'application/xml' } }),
-    });
-
-    // 初回チェック (baseline): 実障害 (www.hira2.jp, 5,183 URL を初回で全て 'new' 化) の
-    // 再発防止。子 sitemap 配下の全 URL を Target 登録するが Change は1件も作らない。
-    const first = await runMonitorCheck(
-      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
-      monitor.id,
-      { fetch: fetchStubV1, hostLimiter: grantingLimiter() },
-    );
-    expect(first.kind).toBe('completed');
-    expect(first.changeIds).toHaveLength(0);
-
-    const targetsAfterFirst = await listTargetsByMonitor(db(), monitor.id);
-    // index文書自体 (1) + 子sitemap文書自体 (1) + item a,b (2)
-    expect(targetsAfterFirst).toHaveLength(4);
-    expect(await listChangesByMonitor(db(), monitor.id)).toHaveLength(0);
-
-    // 2回目チェック: 子 sitemap に新規 URL 'c' が追加された -> それだけが 'new' Change になる。
-    // 既存の a, b は Change を生成しない (SPEC §17.8: 同一 entry 重複通知しない)。
-    const CHILD_SITEMAP_BODY_V2 = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://example.com/a</loc></url>
-  <url><loc>https://example.com/b</loc></url>
-  <url><loc>https://example.com/c</loc></url>
-</urlset>`;
-    const fetchStubV2 = routedFetch({
-      'https://example.com/robots.txt': () => new Response('User-agent: *\nAllow: /', { status: 200 }),
-      'https://example.com/sitemap-index.xml': () =>
-        new Response(SITEMAP_INDEX_BODY, { status: 200, headers: { 'content-type': 'application/xml' } }),
-      'https://example.com/sitemap-child.xml': () =>
-        new Response(CHILD_SITEMAP_BODY_V2, { status: 200, headers: { 'content-type': 'application/xml' } }),
-    });
-    const second = await runMonitorCheck(
-      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
-      monitor.id,
-      { fetch: fetchStubV2, hostLimiter: grantingLimiter() },
-    );
-    expect(second.kind).toBe('completed');
-    expect(second.changeIds).toHaveLength(1);
-
-    const changes = await listChangesByMonitor(db(), monitor.id);
-    expect(changes).toHaveLength(1);
-    expect(changes[0]!.kind).toBe('new');
-    expect(changes[0]!.targetUrl).toBe('https://example.com/c');
-  });
-
-  it('updates last_checked_at for a child sitemap that returns 304 Not Modified (still a successful check)', async () => {
-    const { monitor } = await buildPipelineFixture({
-      sourceType: 'sitemap-index',
-      sourceUrl: 'https://example.com/sitemap-index-nm.xml',
-    });
-    const fetchStubV1 = routedFetch({
-      'https://example.com/robots.txt': () => new Response('User-agent: *\nAllow: /', { status: 200 }),
-      'https://example.com/sitemap-index-nm.xml': () =>
-        new Response(SITEMAP_INDEX_BODY, { status: 200, headers: { 'content-type': 'application/xml' } }),
-      'https://example.com/sitemap-child.xml': () =>
-        new Response(CHILD_SITEMAP_BODY, {
-          status: 200,
-          headers: { 'content-type': 'application/xml', etag: '"child-v1"' },
-        }),
-    });
-    // 2回の runMonitorCheck 呼び出しが同一ミリ秒内に完了すると lastCheckedAt が偶然
-    // 同値になりテストがフレーキーになりうるため、明示的に異なる時刻を注入して決定的にする。
-    await runMonitorCheck(
-      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
-      monitor.id,
-      { fetch: fetchStubV1, hostLimiter: grantingLimiter(), now: () => new Date('2026-07-10T00:00:00.000Z') },
-    );
-
-    const targetsAfterFirst = await listTargetsByMonitor(db(), monitor.id);
-    const childTargetFirst = targetsAfterFirst.find((t) => t.url === 'https://example.com/sitemap-child.xml');
-    expect(childTargetFirst?.lastCheckedAt).toBeTruthy();
-    const lastCheckedAfterFirst = childTargetFirst!.lastCheckedAt;
-
-    // second check: the child sitemap now returns 304 Not Modified. This is still a
-    // *successful* check of the child (just no new body to parse), so last_checked_at
-    // must be updated even though processFeedItems is skipped for it.
-    const fetchStubV2 = routedFetch({
-      'https://example.com/robots.txt': () => new Response('User-agent: *\nAllow: /', { status: 200 }),
-      'https://example.com/sitemap-index-nm.xml': () =>
-        new Response(SITEMAP_INDEX_BODY, { status: 200, headers: { 'content-type': 'application/xml' } }),
-      'https://example.com/sitemap-child.xml': () =>
-        new Response(null, { status: 304, headers: { etag: '"child-v1"' } }),
-    });
-    await runMonitorCheck(
-      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
-      monitor.id,
-      { fetch: fetchStubV2, hostLimiter: grantingLimiter(), now: () => new Date('2026-07-10T00:05:00.000Z') },
-    );
-
-    const targetsAfterSecond = await listTargetsByMonitor(db(), monitor.id);
-    const childTargetSecond = targetsAfterSecond.find((t) => t.url === 'https://example.com/sitemap-child.xml');
-    expect(childTargetSecond?.lastCheckedAt).toBeTruthy();
-    expect(childTargetSecond!.lastCheckedAt).not.toBe(lastCheckedAfterFirst);
-
-    // 初回チェックは baseline (Change 0件) なので、2回目 (304, 新規本文なし) を経ても
-    // Change は引き続き 0 件のまま。
-    const changes = await listChangesByMonitor(db(), monitor.id);
-    expect(changes).toHaveLength(0);
-  });
-});
-
-const SITEMAP_WITH_LASTMOD_BODY = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://example.com/dup-recovery-page</loc><lastmod>2026-01-01T00:00:00Z</lastmod></url>
-</urlset>`;
+// ADR-0010 Phase A (Sitemap Direct): sitemap-index Source は runMonitorCheck 経由では
+// もはや processFeedContent (子Sitemap展開 → item Target化) に到達しない — 既定で
+// processSitemapDirect (URL集合のsnapshot+diff、個々のURLをTarget化しない) に置き換わった。
+// この置き換え自体の runMonitorCheck レベルのテストは test/pipeline/sitemapDirect.test.ts に
+// 移した (6,021件規模でもTarget爆発しないことを含む)。processFeedContent の子Sitemap展開
+// (processSitemapIndexChildren) は Phase B (lastmodベース探索) での再利用のためコードとして
+// 残すのみで、削除しない (runCheck.ts はもう呼び出さない)。
 
 describe('processFeedContent: parse failure does not create a Snapshot (CodeRabbit review 2)', () => {
   it('records the fetch as successful but creates no Snapshot when the feed body is unparsable', async () => {
@@ -325,21 +200,43 @@ describe('processFeedItems: item URLs are re-checked against the SSRF policy (Co
   });
 });
 
-const SITEMAP_WITH_LASTMOD_BODY_V2 = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://example.com/dup-recovery-page</loc><lastmod>2026-02-01T00:00:00Z</lastmod></url>
-</urlset>`;
+// ADR-0010 Phase A 後、'updated' Change の watermark 判定を runMonitorCheck 経由で検証
+// できる Source 種別は atom のみになった (sitemap/sitemap-index は既定で Sitemap Direct に
+// 置き換わり processFeedItems へ到達しないため、rss は updatedAt を持たない)。
+// processFeedItems 自体のロジックは変えていないので、この2テストは sourceType を
+// sitemap から atom に差し替えただけで同じ回帰を検証する。
+const ATOM_WITH_UPDATED_BODY = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example Atom Feed</title>
+  <entry>
+    <title>Recovery Entry</title>
+    <id>urn:uuid:dup-recovery</id>
+    <link href="https://example.com/dup-recovery-page"/>
+    <updated>2026-01-01T00:00:00Z</updated>
+  </entry>
+</feed>`;
+
+const ATOM_WITH_UPDATED_BODY_V2 = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example Atom Feed</title>
+  <entry>
+    <title>Recovery Entry</title>
+    <id>urn:uuid:dup-recovery</id>
+    <link href="https://example.com/dup-recovery-page"/>
+    <updated>2026-02-01T00:00:00Z</updated>
+  </entry>
+</feed>`;
 
 describe('processFeedItems: watermark-based updated detection (migrations/0005_target_updated_watermark.sql)', () => {
-  it('baseline establishes the watermark; an unchanged lastmod on the next check creates zero Changes; only a genuinely changed lastmod fires one updated Change; re-checking that value again is a no-op', async () => {
+  it('baseline establishes the watermark; an unchanged updated timestamp on the next check creates zero Changes; only a genuinely changed timestamp fires one updated Change; re-checking that value again is a no-op', async () => {
     const { monitor } = await buildPipelineFixture({
-      sourceType: 'sitemap',
-      sourceUrl: 'https://example.com/sitemap-watermark.xml',
+      sourceType: 'atom',
+      sourceUrl: 'https://example.com/atom-watermark.xml',
     });
     const fetchStubV1 = routedFetch({
       'https://example.com/robots.txt': () => new Response('User-agent: *\nAllow: /', { status: 200 }),
-      'https://example.com/sitemap-watermark.xml': () =>
-        new Response(SITEMAP_WITH_LASTMOD_BODY, { status: 200, headers: { 'content-type': 'application/xml' } }),
+      'https://example.com/atom-watermark.xml': () =>
+        new Response(ATOM_WITH_UPDATED_BODY, { status: 200, headers: { 'content-type': 'application/atom+xml' } }),
     });
 
     // call 1: baseline. Target 登録され watermark = 2026-01-01 が確定するが Change は0件。
@@ -368,11 +265,14 @@ describe('processFeedItems: watermark-based updated detection (migrations/0005_t
     expect(secondSend).not.toHaveBeenCalled();
     expect(await listChangesByMonitor(db(), monitor.id)).toHaveLength(0);
 
-    // call 3: lastmod が実際に変わった -> その1件だけ 'updated' Change として検出・通知される。
+    // call 3: updated timestamp が実際に変わった -> その1件だけ 'updated' Change として検出・通知される。
     const fetchStubV2 = routedFetch({
       'https://example.com/robots.txt': () => new Response('User-agent: *\nAllow: /', { status: 200 }),
-      'https://example.com/sitemap-watermark.xml': () =>
-        new Response(SITEMAP_WITH_LASTMOD_BODY_V2, { status: 200, headers: { 'content-type': 'application/xml' } }),
+      'https://example.com/atom-watermark.xml': () =>
+        new Response(ATOM_WITH_UPDATED_BODY_V2, {
+          status: 200,
+          headers: { 'content-type': 'application/atom+xml' },
+        }),
     });
     const thirdSend = vi.fn();
     const third = await runMonitorCheck(
@@ -407,13 +307,13 @@ describe('processFeedItems: watermark-based updated detection (migrations/0005_t
 describe('processFeedItems: duplicate dedupeKey recovery (at-least-once delivery, SPEC §17.7-8)', () => {
   it('recreates delivery/notify for a duplicate updated-item Change when a prior run crashed after the Change commit but before the watermark advance', async () => {
     const { monitor } = await buildPipelineFixture({
-      sourceType: 'sitemap',
-      sourceUrl: 'https://example.com/sitemap-dup.xml',
+      sourceType: 'atom',
+      sourceUrl: 'https://example.com/atom-dup.xml',
     });
     const fetchStubV1 = routedFetch({
       'https://example.com/robots.txt': () => new Response('User-agent: *\nAllow: /', { status: 200 }),
-      'https://example.com/sitemap-dup.xml': () =>
-        new Response(SITEMAP_WITH_LASTMOD_BODY, { status: 200, headers: { 'content-type': 'application/xml' } }),
+      'https://example.com/atom-dup.xml': () =>
+        new Response(ATOM_WITH_UPDATED_BODY, { status: 200, headers: { 'content-type': 'application/atom+xml' } }),
     });
 
     // call 1: monitor の初回チェック (baseline) -> Target 登録 (watermark = 2026-01-01) のみ、Change 0件。
@@ -438,12 +338,14 @@ describe('processFeedItems: duplicate dedupeKey recovery (at-least-once delivery
     // fix, a *successful* run always advances the watermark together with the notify attempt —
     // so the only way to observe a "Change committed, watermark not advanced" state is a crash
     // strictly between those two steps.
+    // dedupeKey は processFeedItems の規約どおり item.stableKey (atom entry の <id>) を使う
+    // ('urn:uuid:dup-recovery') — Target.url (link href) ではない。
     const preCrashChange = await insertChangeIfNew(db(), {
       monitorId: monitor.id,
       targetId: pageTarget!.id,
       targetUrl: pageTarget!.url,
       kind: 'updated',
-      dedupeKey: `${pageTarget!.url}:2026-02-01T00:00:00.000Z`,
+      dedupeKey: 'urn:uuid:dup-recovery:2026-02-01T00:00:00.000Z',
       detectedAt: '2026-02-01T00:00:00.000Z',
     });
     expect(preCrashChange.inserted).toBe(true);
@@ -456,8 +358,11 @@ describe('processFeedItems: duplicate dedupeKey recovery (at-least-once delivery
     // advance the watermark to 2026-02-01.
     const fetchStubV2 = routedFetch({
       'https://example.com/robots.txt': () => new Response('User-agent: *\nAllow: /', { status: 200 }),
-      'https://example.com/sitemap-dup.xml': () =>
-        new Response(SITEMAP_WITH_LASTMOD_BODY_V2, { status: 200, headers: { 'content-type': 'application/xml' } }),
+      'https://example.com/atom-dup.xml': () =>
+        new Response(ATOM_WITH_UPDATED_BODY_V2, {
+          status: 200,
+          headers: { 'content-type': 'application/atom+xml' },
+        }),
     });
     const secondSend = vi.fn();
     const secondResult = await runMonitorCheck(
@@ -494,40 +399,11 @@ describe('processFeedItems: duplicate dedupeKey recovery (at-least-once delivery
   });
 });
 
-describe('runMonitorCheck: feed baseline (初回大量取り込み防止, incident: www.hira2.jp sitemap-index)', () => {
-  it('creates zero Changes and zero notifications on the first check of a sitemap with many URLs, while registering every URL as a Target', async () => {
-    const { monitor } = await buildPipelineFixture({
-      sourceType: 'sitemap',
-      sourceUrl: 'https://example.com/big-sitemap.xml',
-    });
-    const urls = Array.from({ length: 25 }, (_, i) => `https://example.com/page-${i}`);
-    const bigSitemapBody = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${urls.map((u) => `  <url><loc>${u}</loc></url>`).join('\n')}
-</urlset>`;
-    const sendSpy = vi.fn();
-    const fetchStub = routedFetch({
-      'https://example.com/robots.txt': () => new Response('User-agent: *\nAllow: /', { status: 200 }),
-      'https://example.com/big-sitemap.xml': () =>
-        new Response(bigSitemapBody, { status: 200, headers: { 'content-type': 'application/xml' } }),
-    });
-
-    const result = await runMonitorCheck(
-      fakeEnv({ NOTIFY_QUEUE: { send: sendSpy } as unknown as Env['NOTIFY_QUEUE'] }),
-      monitor.id,
-      { fetch: fetchStub, hostLimiter: grantingLimiter() },
-    );
-
-    expect(result.kind).toBe('completed');
-    expect(result.changeIds).toHaveLength(0);
-    expect(sendSpy).not.toHaveBeenCalled();
-
-    const targets = await listTargetsByMonitor(db(), monitor.id);
-    // sitemap 文書自体の Target (1) + 25 item Target
-    expect(targets).toHaveLength(26);
-    expect(await listChangesByMonitor(db(), monitor.id)).toHaveLength(0);
-  });
-});
+// 旧: 「初回大量取り込み防止 (incident: www.hira2.jp sitemap-index)」の runMonitorCheck
+// レベルの回帰テストはここにあったが、ADR-0010 Phase A で sitemap/sitemap-index が
+// runMonitorCheck 経由で processSitemapDirect に置き換わったため、この big-sitemap
+// シナリオ (6,021 URL 規模でも Target 爆発しない) は test/pipeline/sitemapDirect.test.ts
+// の baseline テストに移した。
 
 describe('processFeedItems: URL 処理上限 (MAX_FEED_ITEMS_PER_CHECK, silent truncation 禁止)', () => {
   it('exports a positive default cap', () => {
