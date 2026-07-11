@@ -1,5 +1,5 @@
 import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-pool-workers';
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 export default defineConfig(async () => {
   const migrations = await readD1Migrations('./migrations');
@@ -15,8 +15,8 @@ export default defineConfig(async () => {
     test: {
       setupFiles: ['./test/apply-migrations.ts'],
       // .claude/worktrees/ 配下 (AIエージェントの隔離worktree) のテストを拾って
-      // 二重実行しないようにする。node_modules 等の既定 exclude は明示的に維持する。
-      exclude: ['**/node_modules/**', '**/dist/**', '**/.claude/**'],
+      // 二重実行しないようにする。node_modules 等の既定 exclude は configDefaults から継承する。
+      exclude: [...configDefaults.exclude, '**/.claude/**'],
     },
   };
 });

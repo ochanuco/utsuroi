@@ -84,7 +84,7 @@ ADR-0010 Phase B (sitemapTraversal.ts) と同じ設計判断として、抽出�
 
 ### 5. config形状
 
-```
+```ts
 sources.config: {
   pageMode?: 'content' | 'extract',
   extract?: {

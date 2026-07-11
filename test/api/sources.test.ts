@@ -286,6 +286,31 @@ describe('POST /api/sources: config (ADR-0011 page item extraction)', () => {
     expect(body.error.code).toBe('invalid_selector');
   });
 
+  it('rejects an invalid extract.link_selector / title_selector (400 invalid_selector)', async () => {
+    // 不正な link/title セレクタを通すと抽出実行時に HTMLRewriter.on が throw して
+    // 毎チェック失敗し続けるため、作成時に item_selector と同様に検証する。
+    const { app } = buildTestApp();
+    const site = await makeSite();
+    for (const extra of [{ link_selector: ':hover' }, { title_selector: ':hover' }]) {
+      const res = await app.request(
+        '/api/sources',
+        {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({
+            site_id: site.id,
+            type: 'page',
+            url: 'https://example.com/invalid-sub-selector',
+            config: { page_mode: 'extract', extract: { item_selector: '.item', ...extra } },
+          }),
+        },
+        testEnv()
+      );
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as any).error.code).toBe('invalid_selector');
+    }
+  });
+
   it('rejects page_mode "extract" with a missing extract.item_selector (400 invalid_selector)', async () => {
     const { app } = buildTestApp();
     const site = await makeSite();

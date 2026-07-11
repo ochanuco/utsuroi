@@ -42,22 +42,6 @@ export async function processPageItems(
   const rawHash = await sha256Hex(body);
   await putIfAbsent(ctx.env.BODIES, bodyKey(rawHash), body);
 
-  // pageContent.ts (本文差分モード) と同じフィールド規約で Snapshot を記録する。ただし本モードは
-  // normalizeHtml (全文正規化) を行わないため、normalizedHash/normalizedR2Key/textHash は
-  // 持たない (processFeedContent の Snapshot 記録方針と同じ)。
-  await createSnapshot(ctx.db, {
-    monitorId: ctx.monitor.id,
-    targetId: target.id,
-    checkAttemptId,
-    fetchedAt: new Date(ctx.now()).toISOString(),
-    httpStatus: outcome.status,
-    contentType: outcome.contentType,
-    etag: outcome.etag,
-    lastModified: outcome.lastModified,
-    bodyHash: rawHash,
-    r2Key: bodyKey(rawHash),
-  });
-
   const extractConfig = ctx.source.config?.extract;
   if (!extractConfig) {
     // config.pageMode === 'extract' の Source は API 作成時に extract.item_selector を必須と
@@ -74,7 +58,9 @@ export async function processPageItems(
     itemSelector: extractConfig.itemSelector,
     linkSelector: extractConfig.linkSelector,
     titleSelector: extractConfig.titleSelector,
-    baseUrl: ctx.source.url,
+    // リダイレクトを経た場合、相対リンクは最終到達URLを基準に解決される必要がある
+    // (ctx.source.url ではなく outcome.finalUrl を使う。レビュー指摘)。
+    baseUrl: outcome.finalUrl,
     headerCharset: extractCharsetFromContentType(outcome.contentType),
   });
 
@@ -84,8 +70,28 @@ export async function processPageItems(
         `${JSON.stringify(extractConfig.itemSelector)} で抽出されたアイテムが0件でした ` +
         `(セレクタの陳腐化・ページ構造変化の可能性。継続的な0件検知はv1スコープ外)`,
     );
-    return;
+    // 抽出0件でも Snapshot は下で記録する (フェッチ自体は成功しており、etag/lastModified を
+    // 保存しないと次回も全文を取り直すことになるため)。
+  } else {
+    await processFeedItems(ctx, items);
   }
 
-  await processFeedItems(ctx, items);
+  // Snapshot (etag/lastModified を含む条件付きリクエストのメタデータ) は、アイテム処理が
+  // 完了した後にのみ記録する。先に記録すると、extractItems/processFeedItems が途中で throw
+  // した場合でも次回チェックが 304 (Not Modified) でスキップされてしまい、未処理のアイテムが
+  // 本文が次に変わるまで永久に失われる (at-least-once の破れ、レビュー指摘)。
+  // pageContent.ts (本文差分モード) と同じフィールド規約。本モードは normalizeHtml (全文正規化)
+  // を行わないため normalizedHash/normalizedR2Key/textHash は持たない。
+  await createSnapshot(ctx.db, {
+    monitorId: ctx.monitor.id,
+    targetId: target.id,
+    checkAttemptId,
+    fetchedAt: new Date(ctx.now()).toISOString(),
+    httpStatus: outcome.status,
+    contentType: outcome.contentType,
+    etag: outcome.etag,
+    lastModified: outcome.lastModified,
+    bodyHash: rawHash,
+    r2Key: bodyKey(rawHash),
+  });
 }

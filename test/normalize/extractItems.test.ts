@@ -151,6 +151,18 @@ describe('extractItems: 公開契約 (extractItems(body, opts) => Promise<FeedIt
     expect(items[0]!.url).toBe('https://example.com/relative/path');
   });
 
+  it('同一URLへ解決される複数アイテムは最初の1件だけを採用する (正規化後一致の重複を含む)', async () => {
+    // 2件目は同一hrefの重複、3件目はトラッキングパラメータ付きで正規化後に同一URLになる重複。
+    const html = `
+      <div class="item"><a href="/dup">First</a></div>
+      <div class="item"><a href="/dup">Second</a></div>
+      <div class="item"><a href="/dup?utm_source=x">Third</a></div>
+      <div class="item"><a href="/other">Other</a></div>`;
+    const items = await extractItems(toBytes(html), { itemSelector: '.item', baseUrl });
+    expect(items.map((i) => i.url)).toEqual(['https://example.com/dup', 'https://example.com/other']);
+    expect(items[0]!.title).toBe('First');
+  });
+
   it('titleSelector 省略時はリンクテキストへフォールバックする', async () => {
     const html = `<div class="item"><a href="/x">  Link Text Here  </a></div>`;
     const items = await extractItems(toBytes(html), { itemSelector: '.item', baseUrl });

@@ -159,8 +159,14 @@ export async function extractItems(body: Uint8Array, opts: ExtractItemsOptions):
   await rewritten.text();
 
   const items: FeedItem[] = [];
+  // 同一URL (正規化後に一致するものを含む) へ解決される複数アイテムは最初の1件だけを採用する。
+  // stableKey = url のため重複を通すと同一 dedupeKey の FeedItem が並び、下流で無駄な
+  // upsert/照会が走るだけになる (buildSitemapResult の seen と同じ規約)。
+  const seen = new Set<string>();
   for (const acc of accumulators) {
     if (!acc.url) continue; // URL の無いアイテムは除外する (エラーにはしない)
+    if (seen.has(acc.url)) continue;
+    seen.add(acc.url);
     const title = collapseWhitespace(acc.title);
     items.push({
       stableKey: acc.url,

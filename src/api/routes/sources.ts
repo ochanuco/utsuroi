@@ -168,8 +168,20 @@ export function sourcesRoutes(opts: { ssrfResolver?: DnsResolver } = {}) {
     if (body.type === 'page' && body.config?.page_mode === 'extract' && !body.config.extract?.item_selector) {
       throw badRequest('invalid_selector', 'extract.item_selector is required when page_mode is "extract"');
     }
-    if (body.config?.extract?.item_selector && !isValidRewriterSelector(body.config.extract.item_selector)) {
-      throw badRequest('invalid_selector', `extract.item_selector is not a valid selector: ${body.config.extract.item_selector}`);
+    // item/link/title の3セレクタとも lol-html でパース可能かを作成時に検証する。不正な
+    // link_selector/title_selector を通すと、抽出実行時 (extractItems の HTMLRewriter.on) に
+    // throw して毎チェック失敗し続けるため、ここで弾く (レビュー指摘)。
+    if (body.config?.extract) {
+      const selectorFields = [
+        ['item_selector', body.config.extract.item_selector],
+        ['link_selector', body.config.extract.link_selector],
+        ['title_selector', body.config.extract.title_selector],
+      ] as const;
+      for (const [field, selector] of selectorFields) {
+        if (selector !== undefined && !isValidRewriterSelector(selector)) {
+          throw badRequest('invalid_selector', `extract.${field} is not a valid selector: ${selector}`);
+        }
+      }
     }
 
     const source = await createSource(c.env.DB, {
