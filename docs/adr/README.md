@@ -12,3 +12,4 @@
 | [0008](0008-robots-txt-compliance.md) | robots.txtを遵守し禁止時はMonitorをPolicy Stopする | Accepted |
 | [0009](0009-explicit-robots-override.md) | Siteとorigin単位の明示的robots.txt Overrideを許可する | Accepted |
 | [0010](0010-detection-chain-and-source-promotion.md) | Sitemap探索（lastmodベース差分探索、探索・監視・配信の分離） | Proposed |
+| [0011](0011-page-item-extraction.md) | pageアイテム抽出モード（CSSセレクタによる新着検知、Processor抽象の第2具体化） | Proposed |

@@ -1,5 +1,10 @@
 /**
- * page Source の内容処理 (SPEC §12, §13): 正規化 → R2保存 → 前回Snapshotとの比較 → 差分 → Change。
+ * page Source の「本文差分」モード内容処理 (SPEC §12, §13): 正規化 → R2保存 →
+ * 前回Snapshotとの比較 → 差分 → Change。
+ *
+ * page Source のもう1つのモード (config.pageMode === 'extract', ADR-0011 アイテム抽出/
+ * 新着検知) は src/pipeline/pageItems.ts の processPageItems が処理する。ディスパッチ判定は
+ * runCheck.ts を参照。
  */
 import { normalizeHtml, diffText, compareSnapshots, extractCharsetFromContentType } from '../normalize';
 import type { FetchSuccess, NormalizedContent } from '../shared/contracts';
@@ -14,26 +19,6 @@ import {
 import { bodyKey, normalizedKey, diffKey, putIfAbsent, truncateDiffPreview } from './r2';
 import type { CheckContext } from './types';
 
-interface SourceConfig {
-  ignoreSelectors?: string[];
-  includeSelectors?: string[];
-  stripQueryParams?: string[];
-}
-
-/** sources.config (migrations/0002_wave2.sql の追加列) から正規化オプションを読む */
-export async function loadSourceConfig(db: D1Database, sourceId: string): Promise<SourceConfig> {
-  const row = await db
-    .prepare(`SELECT config FROM sources WHERE id = ?`)
-    .bind(sourceId)
-    .first<{ config: string | null }>();
-  if (!row?.config) return {};
-  try {
-    return JSON.parse(row.config) as SourceConfig;
-  } catch {
-    return {};
-  }
-}
-
 export async function processPageContent(
   ctx: CheckContext,
   target: TargetRow,
@@ -42,7 +27,9 @@ export async function processPageContent(
   outcome: FetchSuccess,
   body: Uint8Array,
 ): Promise<void> {
-  const config = await loadSourceConfig(ctx.db, ctx.source.id);
+  // runCheck.ts が読み込み済みの ctx.source.config をそのまま使う (以前は生SQLで再取得していたが、
+  // SourceConfig が page/sitemap 系キーを1つの型に統合したため、CheckContext 経由の値で十分になった)。
+  const config = ctx.source.config ?? {};
   const normalized = await normalizeHtml(
     body,
     {

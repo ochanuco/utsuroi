@@ -36,8 +36,11 @@ export interface CreateSiteInput {
 }
 
 /**
- * sitemap / sitemap-index Source の任意設定 (migrations/0002_wave2.sql の sources.config 列,
- * ADR-0010 Phase B)。他の SourceType では常に null。
+ * Source の任意設定 (migrations/0002_wave2.sql の sources.config 列)。
+ * sitemap系キー (sitemapMode/lastmodMaxAgeDays/maxDepth, ADR-0010 Phase B) は
+ * sitemap/sitemap-index Source にのみ、page系キー (ignoreSelectors/includeSelectors/
+ * stripQueryParams/pageMode/extract, ADR-0011) は page Source にのみ意味を持つ。
+ * どちらも他の SourceType では常に null (src/api/routes/sources.ts が type 別に検証・拒否する)。
  */
 export interface SourceConfig {
   /** 既定 'direct' (ADR-0010 モードA)。'traverse' で lastmodベース探索 (モードB) を有効化する */
@@ -46,6 +49,21 @@ export interface SourceConfig {
   lastmodMaxAgeDays?: number;
   /** traverse モードの sitemap-index 再帰深さ上限 (既定 DEFAULT_MAX_TRAVERSAL_DEPTH) */
   maxDepth?: number;
+  /** page Source の正規化オプション (src/normalize/normalize.ts へそのまま渡す, ADR-0011 以前から存在) */
+  ignoreSelectors?: string[];
+  includeSelectors?: string[];
+  stripQueryParams?: string[];
+  /** page Source の監視方式。既定 'content' (本文差分)。'extract' で ADR-0011 のアイテム抽出モード */
+  pageMode?: 'content' | 'extract';
+  /** pageMode === 'extract' のときの抽出設定 (ADR-0011) */
+  extract?: {
+    /** アイテム集合を区切る CSS セレクタ (必須, 例: '.property_unit') */
+    itemSelector: string;
+    /** アイテム内でリンクを探す CSS セレクタ (既定 'a') */
+    linkSelector?: string;
+    /** アイテム内でタイトルを探す CSS セレクタ (省略時はリンクテキストにフォールバック) */
+    titleSelector?: string;
+  };
 }
 
 export interface SourceRow {

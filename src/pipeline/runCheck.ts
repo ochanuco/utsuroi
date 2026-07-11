@@ -29,6 +29,7 @@ import {
 import { createD1RobotsCache } from './robotsCache';
 import { fetchTargetThroughPolicy } from './fetchTarget';
 import { processPageContent } from './pageContent';
+import { processPageItems } from './pageItems';
 import { processFeedContent } from './feed';
 import { processSitemapDirect } from './sitemapDirect';
 import { processSitemapTraversal } from './sitemapTraversal';
@@ -227,13 +228,21 @@ export async function runMonitorCheck(
       }
 
       // 7. Source 種別ごとの内容処理
+      // page は既定で本文差分 (processPageContent): 正規化した本文全体を前回Snapshotと比較する。
+      // config.pageMode === 'extract' の場合のみアイテム抽出 (ADR-0011, processPageItems) へ
+      // 切り替える: CSSセレクタでアイテム集合を切り出し、実URL単位の新規出現を
+      // processFeedItems 経由で配信する (本文差分は取らない)。
       // sitemap/sitemap-index は既定で Sitemap Direct (ADR-0010 Phase A): 指定した1つの
       // sitemap の URL集合を1ドキュメントとして snapshot+diff する (子を辿らない・個々の
       // URLをTarget化しない)。config.sitemapMode === 'traverse' の場合のみ Sitemap 探索
       // (ADR-0010 Phase B, sitemapTraversal.ts) へ切り替える: lastmodが変化した子だけ
       // 再帰展開し、実URLの新規出現・lastmod更新を processFeedItems 経由で配信する。
       if (source.type === 'page') {
-        await processPageContent(ctx, target, latestSnapshot, lastAttemptId, outcome as FetchSuccess, outcome.body);
+        if (source.config?.pageMode === 'extract') {
+          await processPageItems(ctx, target, lastAttemptId, outcome as FetchSuccess, outcome.body);
+        } else {
+          await processPageContent(ctx, target, latestSnapshot, lastAttemptId, outcome as FetchSuccess, outcome.body);
+        }
       } else if (source.type === 'sitemap' || source.type === 'sitemap-index') {
         if (source.config?.sitemapMode === 'traverse') {
           await processSitemapTraversal(ctx, target, lastAttemptId, outcome as FetchSuccess, outcome.body);

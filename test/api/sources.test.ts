@@ -114,7 +114,18 @@ describe('POST /api/sources: config (ADR-0010 Phase B sitemapMode)', () => {
     );
     expect(res.status).toBe(201);
     const body = (await res.json()) as any;
-    expect(body.config).toEqual({ sitemap_mode: 'traverse', lastmod_max_age_days: 5, max_depth: 2 });
+    // serializeSource は ADR-0011 で page系キーも同じ config 形状に統合したため、
+    // 適用されないキー (page系) は常に null で埋められる (null passthrough)。
+    expect(body.config).toEqual({
+      sitemap_mode: 'traverse',
+      lastmod_max_age_days: 5,
+      max_depth: 2,
+      page_mode: null,
+      extract: null,
+      ignore_selectors: null,
+      include_selectors: null,
+      strip_query_params: null,
+    });
   });
 
   it('rejects config for a page-type source (400 config_not_applicable)', async () => {
@@ -169,6 +180,158 @@ describe('POST /api/sources: config (ADR-0010 Phase B sitemapMode)', () => {
       );
       expect(res.status, `expected 400 for config ${JSON.stringify(config)}`).toBe(400);
     }
+  });
+});
+
+// ADR-0011: page Source の「新着検知」(アイテム抽出) config。
+describe('POST /api/sources: config (ADR-0011 page item extraction)', () => {
+  it('creates a page source with an extract config (201) and echoes it back in serializeSource', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'page',
+          url: 'https://example.com/listing',
+          config: { page_mode: 'extract', extract: { item_selector: '.property_unit' } },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.config).toEqual({
+      sitemap_mode: null,
+      lastmod_max_age_days: null,
+      max_depth: null,
+      page_mode: 'extract',
+      extract: { item_selector: '.property_unit', link_selector: null, title_selector: null },
+      ignore_selectors: null,
+      include_selectors: null,
+      strip_query_params: null,
+    });
+  });
+
+  it('rejects sitemap_mode config for a page-type source (400 config_not_applicable)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'page',
+          url: 'https://example.com/page-with-sitemap-config',
+          config: { sitemap_mode: 'traverse' },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe('config_not_applicable');
+  });
+
+  it('rejects page_mode config for a sitemap-index-type source (400 config_not_applicable)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'sitemap-index',
+          url: 'https://example.com/sitemap-index-with-page-config.xml',
+          config: { page_mode: 'extract', extract: { item_selector: '.item' } },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe('config_not_applicable');
+  });
+
+  it('rejects an invalid extract.item_selector (400 invalid_selector)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'page',
+          url: 'https://example.com/invalid-selector',
+          config: { page_mode: 'extract', extract: { item_selector: ':hover' } },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe('invalid_selector');
+  });
+
+  it('rejects an invalid extract.link_selector / title_selector (400 invalid_selector)', async () => {
+    // 不正な link/title セレクタを通すと抽出実行時に HTMLRewriter.on が throw して
+    // 毎チェック失敗し続けるため、作成時に item_selector と同様に検証する。
+    const { app } = buildTestApp();
+    const site = await makeSite();
+    for (const extra of [{ link_selector: ':hover' }, { title_selector: ':hover' }]) {
+      const res = await app.request(
+        '/api/sources',
+        {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({
+            site_id: site.id,
+            type: 'page',
+            url: 'https://example.com/invalid-sub-selector',
+            config: { page_mode: 'extract', extract: { item_selector: '.item', ...extra } },
+          }),
+        },
+        testEnv()
+      );
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as any).error.code).toBe('invalid_selector');
+    }
+  });
+
+  it('rejects page_mode "extract" with a missing extract.item_selector (400 invalid_selector)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'page',
+          url: 'https://example.com/missing-item-selector',
+          config: { page_mode: 'extract' },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe('invalid_selector');
   });
 });
 
