@@ -15,3 +15,4 @@
 | [0011](0011-page-item-extraction.md) | pageアイテム抽出モード（CSSセレクタによる新着検知、Processor抽象の第2具体化） | Proposed |
 | [0012](0012-destination-archive.md) | Destinationのアーカイブ（soft delete、配送履歴を保ったままwebhookを破棄） | Proposed |
 | [0013](0013-extract-structured-fields.md) | アイテム抽出モードの構造化フィールド抽出（price/所在地等をdiff_previewに配線、PATCH /api/sources/:id） | Proposed |
+| [0014](0014-transient-fetch-retry.md) | 一過性フェッチ失敗のチェック内リトライ（http_5xx/network_errorを250ms×nバックオフで計3試行） | Proposed |
