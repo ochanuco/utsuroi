@@ -120,6 +120,7 @@ describe('POST /api/sources: config (ADR-0010 Phase B sitemapMode)', () => {
       sitemap_mode: 'traverse',
       lastmod_max_age_days: 5,
       max_depth: 2,
+      child_include_patterns: null,
       page_mode: null,
       extract: null,
       ignore_selectors: null,
@@ -183,6 +184,123 @@ describe('POST /api/sources: config (ADR-0010 Phase B sitemapMode)', () => {
   });
 });
 
+// ADR-0015: traverse対象の子sitemapを絞り込む child_include_patterns。
+describe('POST /api/sources: config (ADR-0015 child_include_patterns)', () => {
+  it('creates a sitemap-index source with child_include_patterns (201) and echoes it back', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'sitemap-index',
+          url: 'https://example.com/pattern-sitemap-index.xml',
+          config: { sitemap_mode: 'traverse', child_include_patterns: ['post-sitemap*.xml'] },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.config.child_include_patterns).toEqual(['post-sitemap*.xml']);
+  });
+
+  it('rejects child_include_patterns for a page-type source (400 config_not_applicable)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'page',
+          url: 'https://example.com/page-with-child-include-patterns',
+          config: { child_include_patterns: ['post-sitemap*.xml'] },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe('config_not_applicable');
+  });
+
+  it('rejects an out-of-range patterns array (11 items, an empty string, or a 201-char string) (400)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const invalidConfigs = [
+      { child_include_patterns: Array.from({ length: 11 }, (_, i) => `p${i}*.xml`) },
+      { child_include_patterns: [''] },
+      { child_include_patterns: ['a'.repeat(201)] },
+    ];
+
+    for (const config of invalidConfigs) {
+      const res = await app.request(
+        '/api/sources',
+        {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({
+            site_id: site.id,
+            type: 'sitemap-index',
+            url: `https://example.com/invalid-child-patterns-${JSON.stringify(config).length}.xml`,
+            config,
+          }),
+        },
+        testEnv()
+      );
+      expect(res.status, `expected 400 for config ${JSON.stringify(config)}`).toBe(400);
+    }
+  });
+
+  it('updates child_include_patterns via PATCH', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const created = (
+      await (
+        await app.request(
+          '/api/sources',
+          {
+            method: 'POST',
+            headers: jsonHeaders(),
+            body: JSON.stringify({
+              site_id: site.id,
+              type: 'sitemap',
+              url: 'https://example.com/patch-child-patterns.xml',
+              config: { sitemap_mode: 'traverse', child_include_patterns: ['post-sitemap*.xml'] },
+            }),
+          },
+          testEnv()
+        )
+      ).json()
+    ) as any;
+
+    const res = await app.request(
+      `/api/sources/${created.id}`,
+      {
+        method: 'PATCH',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          config: { sitemap_mode: 'traverse', child_include_patterns: ['post-sitemap*.xml', 'news-sitemap*.xml'] },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.config.child_include_patterns).toEqual(['post-sitemap*.xml', 'news-sitemap*.xml']);
+  });
+});
+
 // ADR-0011: page Source の「新着検知」(アイテム抽出) config。
 describe('POST /api/sources: config (ADR-0011 page item extraction)', () => {
   it('creates a page source with an extract config (201) and echoes it back in serializeSource', async () => {
@@ -209,6 +327,7 @@ describe('POST /api/sources: config (ADR-0011 page item extraction)', () => {
       sitemap_mode: null,
       lastmod_max_age_days: null,
       max_depth: null,
+      child_include_patterns: null,
       page_mode: 'extract',
       extract: { item_selector: '.property_unit', link_selector: null, title_selector: null, fields: null },
       ignore_selectors: null,

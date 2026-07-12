@@ -389,6 +389,10 @@ function renderConfigSummary(source) {
     if (config.lastmod_max_age_days) parts.push(`lastmod上限: ${config.lastmod_max_age_days}日`);
     if (config.max_depth) parts.push(`探索深さ: ${config.max_depth}`);
     if (parts.length > 0) lines.push(parts.join('・'));
+    // ADR-0015: 子sitemapのincludeパターン (設定時のみ表示)。
+    if (config.child_include_patterns && config.child_include_patterns.length > 0) {
+      lines.push(`子パターン: ${config.child_include_patterns.join(', ')}`);
+    }
   }
 
   if (lines.length === 0) return null;
@@ -398,15 +402,18 @@ function renderConfigSummary(source) {
 }
 
 /**
- * page Sourceの「設定を編集」トグルボタン + インライン編集フォーム (PATCH /api/sources/:id,
- * ADR-0013で追加済みのconfig限定更新APIの入口)。モード自体 (本文差分↔新着検知) の切り替えは
- * 提供しない (page_modeは現在値を維持したまま送る)。
+ * page/sitemap系 Sourceの「設定を編集」トグルボタン + インライン編集フォーム (PATCH
+ * /api/sources/:id, ADR-0013で追加済みのconfig限定更新APIの入口)。モード自体 (page:
+ * 本文差分↔新着検知 / sitemap系: 一覧差分↔新着検知) の切り替えは提供しない (現在値を維持した
+ * まま送る)。sitemap系はtraverseモードのときのみ呼び出される (direct はサマリ表示のみで
+ * 呼び出し元 renderSourceCard が編集フォーム自体を出さない)。
  *
  * PATCHはconfig全置換 (サーバー側でマージしない) のため、フォームに出さない既存キー
- * (strip_query_params等) も現在値から引き継いで送信する。
+ * (strip_query_params・sitemap_mode等) も現在値から引き継いで送信する。
  */
 function renderSourceConfigEditForm(source, hideError, showError, reload) {
   const config = source.config ?? {};
+  const isSitemapType = source.type === 'sitemap' || source.type === 'sitemap-index';
   const isExtract = config.page_mode === 'extract';
 
   const wrap = el('div', { class: 'hidden source-config-edit' });
@@ -418,8 +425,30 @@ function renderSourceConfigEditForm(source, hideError, showError, reload) {
   let fieldsEditor;
   let includeSelectorsInput;
   let ignoreSelectorsInput;
+  let childIncludePatternsInput;
+  let lastmodMaxAgeDaysInput;
+  let maxDepthInput;
 
-  if (isExtract) {
+  if (isSitemapType) {
+    // ADR-0015: traverse時のみ編集可能な3項目 (子sitemapパターン・lastmod上限日数・探索深さ上限)。
+    // sitemap_mode自体は表示のみ・変更不可 (提出時に現在値をそのまま引き継ぐ)。
+    childIncludePatternsInput = el('input', { attrs: { type: 'text', placeholder: '例: post-sitemap*.xml' } });
+    childIncludePatternsInput.value = (config.child_include_patterns ?? []).join(', ');
+    lastmodMaxAgeDaysInput = el('input', {
+      attrs: { type: 'number', min: 1, max: 30, step: 1, placeholder: '既定3' },
+    });
+    lastmodMaxAgeDaysInput.value = config.lastmod_max_age_days ?? '';
+    maxDepthInput = el('input', { attrs: { type: 'number', min: 1, max: 5, step: 1, placeholder: '既定3' } });
+    maxDepthInput.value = config.max_depth ?? '';
+
+    form.appendChild(
+      fieldRow([
+        field('子sitemapパターン (任意・カンマ区切り、例: post-sitemap*.xml)', childIncludePatternsInput),
+        field('lastmod上限日数 (任意・1〜30)', lastmodMaxAgeDaysInput),
+        field('探索深さ上限 (任意・1〜5)', maxDepthInput),
+      ])
+    );
+  } else if (isExtract) {
     itemSelectorInput = el('input', { attrs: { type: 'text', required: true, placeholder: '.property_unit' } });
     itemSelectorInput.value = config.extract?.item_selector ?? '';
     linkSelectorInput = el('input', { attrs: { type: 'text', placeholder: 'a（任意）' } });
@@ -467,15 +496,40 @@ function renderSourceConfigEditForm(source, hideError, showError, reload) {
     event.preventDefault();
     hideError();
 
-    // PATCHはconfig全置換のため、現在値 (page_mode・strip_query_params等、このフォームには
-    // 出していないキーを含む) から出発し、編集対象のキーだけ差し替える。
+    // PATCHはconfig全置換のため、現在値 (page_mode・sitemap_mode・strip_query_params等、
+    // このフォームには出していないキーを含む) から出発し、編集対象のキーだけ差し替える。
     const nextConfig = {};
     if (config.page_mode !== undefined && config.page_mode !== null) nextConfig.page_mode = config.page_mode;
+    if (config.sitemap_mode !== undefined && config.sitemap_mode !== null) nextConfig.sitemap_mode = config.sitemap_mode;
     if (config.strip_query_params && config.strip_query_params.length > 0) {
       nextConfig.strip_query_params = config.strip_query_params;
     }
 
-    if (isExtract) {
+    if (isSitemapType) {
+      // ADR-0015: 3項目とも任意 (空欄なら既存configから外れる = APIの既定値にフォールバックする)。
+      const childIncludePatterns = parseSelectorList(childIncludePatternsInput.value);
+      if (childIncludePatterns) nextConfig.child_include_patterns = childIncludePatterns;
+
+      const lastmodMaxAgeDaysRaw = lastmodMaxAgeDaysInput.value.trim();
+      if (lastmodMaxAgeDaysRaw !== '') {
+        const n = Number(lastmodMaxAgeDaysRaw);
+        if (!Number.isInteger(n) || n < 1 || n > 30) {
+          showError('lastmod上限日数は1〜30の整数で入力してください。');
+          return;
+        }
+        nextConfig.lastmod_max_age_days = n;
+      }
+
+      const maxDepthRaw = maxDepthInput.value.trim();
+      if (maxDepthRaw !== '') {
+        const n = Number(maxDepthRaw);
+        if (!Number.isInteger(n) || n < 1 || n > 5) {
+          showError('探索深さ上限は1〜5の整数で入力してください。');
+          return;
+        }
+        nextConfig.max_depth = n;
+      }
+    } else if (isExtract) {
       const itemSelector = itemSelectorInput.value.trim();
       if (!itemSelector) {
         showError('アイテムセレクタを入力してください。');
@@ -561,9 +615,12 @@ function renderSourceCard(source, monitorsForSource, monitorsFetchFailed, onSour
   const configSummary = renderConfigSummary(source);
   if (configSummary) card.appendChild(configSummary);
 
-  // 設定編集はpage Sourceのみ (sitemap系は今回スコープ外・表示のみ)。監視状態の取得失敗とは
-  // 独立した機能のため、下の monitorsFetchFailed 分岐より前で組み込む。
-  if (source.type === 'page') {
+  // 設定編集はpage Source全般と、sitemap系のうちtraverseモードのみ (ADR-0015)。sitemap系の
+  // directモードはサマリ表示のみで編集フォームは出さない (一覧差分自体には編集可能な項目がない)。
+  // 監視状態の取得失敗とは独立した機能のため、下の monitorsFetchFailed 分岐より前で組み込む。
+  const isSitemapTraverseSource =
+    (source.type === 'sitemap' || source.type === 'sitemap-index') && source.config?.sitemap_mode === 'traverse';
+  if (source.type === 'page' || isSitemapTraverseSource) {
     const { toggleButton, form: editForm } = renderSourceConfigEditForm(source, hideError, showError, reload);
     card.appendChild(el('div', { class: 'button-row source-config-edit-toggle' }, [toggleButton]));
     card.appendChild(editForm);
@@ -644,6 +701,15 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
   const ignoreSelectorsField = field('除外セレクタ (任意)', ignoreSelectorsInput);
   ignoreSelectorsField.classList.add('hidden');
 
+  // sitemap系 × 新着検知 (traverse) のときだけ表示する、子sitemapのincludeパターン (ADR-0015・
+  // 任意・カンマ区切りで複数可)。指定した場合、ファイル名がいずれかのパターンにマッチする
+  // 子sitemapだけがtraverse対象になる (タグ・カテゴリ等のアーカイブ系sitemapを除外する用途)。
+  const childIncludePatternsInput = el('input', {
+    attrs: { type: 'text', placeholder: '例: post-sitemap*.xml' },
+  });
+  const childIncludePatternsField = field('子sitemapパターン (任意、例: post-sitemap*.xml)', childIncludePatternsInput);
+  childIncludePatternsField.classList.add('hidden');
+
   function isSitemapType(type) {
     return type === 'sitemap' || type === 'sitemap-index';
   }
@@ -672,8 +738,9 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
   }
 
   /**
-   * page のモードに応じた追加入力の表示切替:
-   * 新着検知 → アイテムセレクタ / 本文差分 → DOM抽出・除外セレクタ (どちらも page 以外では非表示)
+   * page/sitemap系のモードに応じた追加入力の表示切替:
+   * page 新着検知 → アイテムセレクタ / page 本文差分 → DOM抽出・除外セレクタ /
+   * sitemap系 新着検知 (traverse) → 子sitemapパターン (ADR-0015)
    */
   function syncItemSelectorVisibility() {
     const isPage = isPageType(typeSelect.value);
@@ -683,6 +750,9 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
     fieldsEditor.container.classList.toggle('hidden', !showExtract);
     includeSelectorsField.classList.toggle('hidden', !showContent);
     ignoreSelectorsField.classList.toggle('hidden', !showContent);
+
+    const showChildIncludePatterns = isSitemapType(typeSelect.value) && modeSelect.value === 'traverse';
+    childIncludePatternsField.classList.toggle('hidden', !showChildIncludePatterns);
   }
 
   function syncModeVisibility() {
@@ -707,6 +777,8 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
         const sourceBody = { site_id: siteId, type: typeSelect.value, url };
         if (isSitemapType(typeSelect.value) && modeSelect.value === 'traverse') {
           sourceBody.config = { sitemap_mode: 'traverse' };
+          const childIncludePatterns = parseSelectorList(childIncludePatternsInput.value);
+          if (childIncludePatterns) sourceBody.config.child_include_patterns = childIncludePatterns;
         } else if (isPageType(typeSelect.value) && modeSelect.value === 'extract') {
           const itemSelector = itemSelectorInput.value.trim();
           if (!itemSelector) {
@@ -773,6 +845,7 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
         urlInput.value = '';
         intervalInput.value = '';
         itemSelectorInput.value = '';
+        childIncludePatternsInput.value = '';
         fieldsEditor.reset();
         try {
           await onSourcesChanged();
@@ -794,8 +867,9 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
       field('監視間隔 (分・空欄なら監視なし)', intervalInput),
     ])
   );
-  // 本文差分のDOM抽出/除外セレクタは任意項目のため2行目に置く (1行目はモードに応じた必須系のみ)。
-  form.appendChild(fieldRow([includeSelectorsField, ignoreSelectorsField]));
+  // 本文差分のDOM抽出/除外セレクタ・sitemap系新着検知の子sitemapパターンは任意項目のため
+  // 2行目に置く (1行目はモードに応じた必須系のみ)。
+  form.appendChild(fieldRow([includeSelectorsField, ignoreSelectorsField, childIncludePatternsField]));
   // 新着検知の構造化フィールド抽出 (任意・行が可変のため単独行に置く)。
   form.appendChild(fieldsEditor.container);
   form.appendChild(el('button', { attrs: { type: 'submit' }, text: 'Sourceを追加' }));

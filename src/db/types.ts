@@ -49,6 +49,12 @@ export interface SourceConfig {
   lastmodMaxAgeDays?: number;
   /** traverse モードの sitemap-index 再帰深さ上限 (既定 DEFAULT_MAX_TRAVERSAL_DEPTH) */
   maxDepth?: number;
+  /**
+   * traverse モードで辿る子sitemapを絞り込むincludeパターン (ADR-0015)。未指定/空なら
+   * 従来どおり全子sitemapが対象。文字列配列 (1..10件、各1..200文字、API層で検証)。
+   * マッチ仕様は src/pipeline/sitemapTraversal.ts の matchesChildIncludePattern 参照。
+   */
+  childIncludePatterns?: string[];
   /** page Source の正規化オプション (src/normalize/normalize.ts へそのまま渡す, ADR-0011 以前から存在) */
   ignoreSelectors?: string[];
   includeSelectors?: string[];

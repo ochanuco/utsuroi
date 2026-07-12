@@ -57,6 +57,8 @@ const sourceConfigShape = z
     sitemap_mode: z.enum(['direct', 'traverse']).optional(),
     lastmod_max_age_days: z.number().int().min(1).max(30).optional(),
     max_depth: z.number().int().min(1).max(5).optional(),
+    // sitemap / sitemap-index 専用、traverseモードでのみ意味を持つ (ADR-0015)。
+    child_include_patterns: z.array(z.string().min(1).max(200)).min(1).max(10).optional(),
     // page 専用 (ADR-0011 + 既存の normalize オプション)
     page_mode: z.enum(['content', 'extract']).optional(),
     extract: extractConfigSchema.optional(),
@@ -81,11 +83,12 @@ const updateSourceConfigSchema = z.object({ config: sourceConfigShape }).strict(
 
 type SourceConfigInput = NonNullable<z.infer<typeof createSourceSchema>['config']>;
 
-/** sitemap/sitemap-index にのみ適用可能な config キー (ADR-0010 Phase B) */
+/** sitemap/sitemap-index にのみ適用可能な config キー (ADR-0010 Phase B, ADR-0015) */
 const SITEMAP_ONLY_CONFIG_KEYS: Array<keyof SourceConfigInput> = [
   'sitemap_mode',
   'lastmod_max_age_days',
   'max_depth',
+  'child_include_patterns',
 ];
 /** page にのみ適用可能な config キー (ADR-0011 + 既存の normalize オプション) */
 const PAGE_ONLY_CONFIG_KEYS: Array<keyof SourceConfigInput> = [
@@ -127,6 +130,7 @@ function toSourceConfig(input: SourceConfigInput | undefined): SourceConfig | un
   if (input.sitemap_mode !== undefined) config.sitemapMode = input.sitemap_mode;
   if (input.lastmod_max_age_days !== undefined) config.lastmodMaxAgeDays = input.lastmod_max_age_days;
   if (input.max_depth !== undefined) config.maxDepth = input.max_depth;
+  if (input.child_include_patterns !== undefined) config.childIncludePatterns = input.child_include_patterns;
   if (input.page_mode !== undefined) config.pageMode = input.page_mode;
   if (input.extract !== undefined) {
     config.extract = {

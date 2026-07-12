@@ -6,7 +6,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { runMonitorCheck } from '../../src/pipeline/runCheck';
-import { traverseSitemapIndex } from '../../src/pipeline/sitemapTraversal';
+import { matchesChildIncludePattern, traverseSitemapIndex } from '../../src/pipeline/sitemapTraversal';
 import type { CheckContext } from '../../src/pipeline/types';
 import type { Env } from '../../src/shared/env';
 import type { AdapterParseResult, FetcherPolicy } from '../../src/shared/contracts';
@@ -960,6 +960,7 @@ describe('runMonitorCheck: Sitemap Traversal fetch budget (MAX_TRAVERSAL_FETCHES
       feedItemsTruncated: 0,
       fetchBudgetTruncated: 0,
       fetchesUsed: 0,
+      patternExcluded: 0,
     };
     await traverseSitemapIndex(
       buildCtx(routedFetch({ [ROBOTS_ALLOW[0]]: ROBOTS_ALLOW[1] }), null),
@@ -990,6 +991,7 @@ describe('runMonitorCheck: Sitemap Traversal fetch budget (MAX_TRAVERSAL_FETCHES
       feedItemsTruncated: 0,
       fetchBudgetTruncated: 0,
       fetchesUsed: 0,
+      patternExcluded: 0,
     };
     await traverseSitemapIndex(
       buildCtx(trackedFetch, '2026-07-01T00:00:00.000Z'),
@@ -1017,5 +1019,209 @@ describe('runMonitorCheck: Sitemap Traversal fetch budget (MAX_TRAVERSAL_FETCHES
     expect(child1?.lastKnownUpdatedAt).toBe(WITHIN_CUTOFF_A);
     // budget-child-3 was actually fetched+expanded (empty urlset, no further truncation): watermark advances.
     expect(child3?.lastKnownUpdatedAt).toBe('2026-07-10T18:00:00.000Z');
+  });
+});
+
+// ADR-0015: child_include_patterns によるtraverse対象の子sitemap絞り込み。
+describe('matchesChildIncludePattern (ADR-0015 glob matching)', () => {
+  it('matches "*" against any suffix, including empty, on the filename only', () => {
+    expect(matchesChildIncludePattern('https://example.com/post-sitemap.xml', ['post-sitemap*.xml'])).toBe(true);
+    expect(matchesChildIncludePattern('https://example.com/post-sitemap2.xml', ['post-sitemap*.xml'])).toBe(true);
+    expect(matchesChildIncludePattern('https://example.com/post-sitemap30.xml', ['post-sitemap*.xml'])).toBe(true);
+  });
+
+  it('does not match a filename that merely contains the literal prefix (anchored match)', () => {
+    expect(matchesChildIncludePattern('https://example.com/post_tag-sitemap.xml', ['post-sitemap*.xml'])).toBe(false);
+    expect(matchesChildIncludePattern('https://example.com/page-sitemap.xml', ['post-sitemap*.xml'])).toBe(false);
+  });
+
+  it('requires an exact match for a pattern without "*"', () => {
+    expect(matchesChildIncludePattern('https://example.com/sitemap.xml', ['sitemap.xml'])).toBe(true);
+    expect(matchesChildIncludePattern('https://example.com/sitemap2.xml', ['sitemap.xml'])).toBe(false);
+  });
+
+  it('treats regex metacharacters in the pattern as literal, not as regex syntax', () => {
+    // '.' はワイルドカードではなくリテラルの '.' として扱われる (regex の任意1文字ではない)。
+    expect(matchesChildIncludePattern('https://example.com/post-sitemapXxml', ['post-sitemap*.xml'])).toBe(false);
+    expect(matchesChildIncludePattern('https://example.com/post-sitemap.xml', ['post-sitemap*.xml'])).toBe(true);
+  });
+
+  it('is case-sensitive', () => {
+    expect(matchesChildIncludePattern('https://example.com/Post-Sitemap.xml', ['post-sitemap*.xml'])).toBe(false);
+  });
+
+  it('matches when any of multiple patterns matches', () => {
+    const patterns = ['post-sitemap*.xml', 'news-sitemap*.xml'];
+    expect(matchesChildIncludePattern('https://example.com/news-sitemap1.xml', patterns)).toBe(true);
+    expect(matchesChildIncludePattern('https://example.com/post_tag-sitemap.xml', patterns)).toBe(false);
+  });
+
+  it('evaluates only the last path segment (filename), not the full URL', () => {
+    // パス途中に 'post-sitemap' を含んでいてもファイル名自体が一致しなければマッチしない。
+    expect(matchesChildIncludePattern('https://example.com/post-sitemap/archive.xml', ['post-sitemap*.xml'])).toBe(
+      false,
+    );
+  });
+});
+
+describe('runMonitorCheck: Sitemap Traversal child_include_patterns (ADR-0015)', () => {
+  it('excludes non-matching children from Target registration/selection without consuming the MAX_CHILD_SITEMAPS budget, and records patternExcluded alongside childrenTruncated in the audit event', async () => {
+    const { monitor } = await buildPipelineFixture({
+      sourceType: 'sitemap-index',
+      sourceUrl: 'https://example.com/pattern-root.xml',
+      sourceConfig: { sitemapMode: 'traverse', childIncludePatterns: ['post-sitemap*.xml'] },
+    });
+
+    // 21件の記事sitemap (パターンにマッチ、cutoff内、lastmodをすべて異ならせる) + 3件のタグ
+    // sitemap (パターンに非マッチ、cutoff内)。パターン除外がMAX_CHILD_SITEMAPSの枠取りより
+    // *前段*で行われることを示すため、タグ側を混ぜても記事側の枠消費 (21件→20件への
+    // truncate) が変わらないことを確認する。
+    const baseTimeMs = new Date(WITHIN_CUTOFF_A).getTime();
+    const postChildren = Array.from({ length: 21 }, (_, i) => ({
+      loc: `https://example.com/post-sitemap-${i}.xml`,
+      lastmod: new Date(baseTimeMs + i * 60_000).toISOString(),
+    }));
+    const tagChildren = Array.from({ length: 3 }, (_, i) => ({
+      loc: `https://example.com/post_tag-sitemap-${i}.xml`,
+      lastmod: WITHIN_CUTOFF_A,
+    }));
+    const oldestPostUrl = postChildren[0]!.loc; // 記事側で最も古い (=枠から漏れるべき) 子
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runMonitorCheck(
+        fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+        monitor.id,
+        {
+          fetch: routedFetch({
+            [ROBOTS_ALLOW[0]]: ROBOTS_ALLOW[1],
+            'https://example.com/pattern-root.xml': () =>
+              new Response(sitemapIndexBody([...postChildren, ...tagChildren]), {
+                status: 200,
+                headers: { 'content-type': 'application/xml' },
+              }),
+          }),
+          hostLimiter: grantingLimiter(),
+          now: NOW,
+        },
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    const targets = await listTargetsByMonitor(db(), monitor.id);
+    // Source自体 (1) + 記事側20件 (最古の1件はMAX_CHILD_SITEMAPSの枠から漏れる)。タグ側3件は
+    // パターン非マッチのため Target すら作られない。
+    expect(targets).toHaveLength(21);
+    expect(targets.some((t) => t.url === oldestPostUrl)).toBe(false);
+    expect(targets.some((t) => t.url === postChildren[20]!.loc)).toBe(true);
+    for (const tag of tagChildren) {
+      expect(targets.some((t) => t.url === tag.loc)).toBe(false);
+    }
+
+    const events = await listAuditEventsBySubject(db(), monitor.id);
+    const truncationEvent = events.find((e) => e.action === 'monitor.traversal_truncated');
+    expect(truncationEvent).toBeTruthy();
+    const payload = truncationEvent?.payload as { childrenTruncated: number; patternExcluded: number };
+    expect(payload.childrenTruncated).toBe(1);
+    expect(payload.patternExcluded).toBe(3);
+  });
+
+  it('does not fetch or register non-matching children, and does not create an audit event when patternExcluded is the only non-zero count (routine filter, same treatment as originBlocked/missingLastmodSkipped)', async () => {
+    const { monitor } = await buildPipelineFixture({
+      sourceType: 'sitemap-index',
+      sourceUrl: 'https://example.com/pattern-only-root.xml',
+      sourceConfig: { sitemapMode: 'traverse', childIncludePatterns: ['post-sitemap*.xml'] },
+    });
+    const rootBody = (postLastmod: string) =>
+      sitemapIndexBody([
+        { loc: 'https://example.com/post-sitemap.xml', lastmod: postLastmod },
+        { loc: 'https://example.com/post_tag-sitemap.xml', lastmod: postLastmod },
+      ]);
+
+    // baseline
+    await runMonitorCheck(
+      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      monitor.id,
+      {
+        fetch: routedFetch({
+          [ROBOTS_ALLOW[0]]: ROBOTS_ALLOW[1],
+          'https://example.com/pattern-only-root.xml': () =>
+            new Response(rootBody(WITHIN_CUTOFF_A), { status: 200, headers: { 'content-type': 'application/xml' } }),
+        }),
+        hostLimiter: grantingLimiter(),
+        now: NOW,
+      },
+    );
+
+    // 2回目: post-sitemap.xml のlastmodが変化 -> フェッチされる。post_tag-sitemap.xml は
+    // パターン非マッチのため常に除外される (lastmodが変化しても対象外)。
+    const { fetch: fetchStub, calls } = trackingFetch(
+      routedFetch({
+        [ROBOTS_ALLOW[0]]: ROBOTS_ALLOW[1],
+        'https://example.com/pattern-only-root.xml': () =>
+          new Response(rootBody(WITHIN_CUTOFF_B), { status: 200, headers: { 'content-type': 'application/xml' } }),
+        'https://example.com/post-sitemap.xml': () =>
+          new Response(urlsetBody([]), { status: 200, headers: { 'content-type': 'application/xml' } }),
+      }),
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runMonitorCheck(
+        fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+        monitor.id,
+        { fetch: fetchStub, hostLimiter: grantingLimiter(), now: NOW },
+      );
+
+      expect(calls.some((u) => u.includes('post-sitemap.xml') && !u.includes('post_tag'))).toBe(true);
+      expect(calls.some((u) => u.includes('post_tag-sitemap.xml'))).toBe(false);
+
+      const truncationWarns = warnSpy.mock.calls
+        .map((args) => String(args[0]))
+        .filter((m) => m.includes('truncated during traversal'));
+      expect(truncationWarns.some((m) => m.includes('"patternExcluded":1'))).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    const targets = await listTargetsByMonitor(db(), monitor.id);
+    expect(targets.some((t) => t.url === 'https://example.com/post-sitemap.xml')).toBe(true);
+    expect(targets.some((t) => t.url === 'https://example.com/post_tag-sitemap.xml')).toBe(false);
+
+    const events = await listAuditEventsBySubject(db(), monitor.id);
+    expect(events.find((e) => e.action === 'monitor.traversal_truncated')).toBeUndefined();
+  });
+
+  it('leaves traversal behavior unchanged when child_include_patterns is not set (regression)', async () => {
+    // 既存の「MAX_CHILD_SITEMAPS selection」テストと同一シナリオをパターン未設定で再確認する
+    // (config.childIncludePatterns が undefined のときに従来どおり全子sitemapが対象になること)。
+    const { monitor } = await buildPipelineFixture({
+      sourceType: 'sitemap-index',
+      sourceUrl: 'https://example.com/no-pattern-root.xml',
+      sourceConfig: { sitemapMode: 'traverse' },
+    });
+    const rootBody = sitemapIndexBody([
+      { loc: 'https://example.com/post-sitemap.xml', lastmod: WITHIN_CUTOFF_A },
+      { loc: 'https://example.com/post_tag-sitemap.xml', lastmod: WITHIN_CUTOFF_A },
+    ]);
+
+    await runMonitorCheck(
+      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      monitor.id,
+      {
+        fetch: routedFetch({
+          [ROBOTS_ALLOW[0]]: ROBOTS_ALLOW[1],
+          'https://example.com/no-pattern-root.xml': () =>
+            new Response(rootBody, { status: 200, headers: { 'content-type': 'application/xml' } }),
+        }),
+        hostLimiter: grantingLimiter(),
+        now: NOW,
+      },
+    );
+
+    const targets = await listTargetsByMonitor(db(), monitor.id);
+    // パターン未設定なので両方とも登録される (従来どおり)。
+    expect(targets.some((t) => t.url === 'https://example.com/post-sitemap.xml')).toBe(true);
+    expect(targets.some((t) => t.url === 'https://example.com/post_tag-sitemap.xml')).toBe(true);
   });
 });

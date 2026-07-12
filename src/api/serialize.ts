@@ -53,6 +53,7 @@ export function serializeSource(row: SourceRow) {
           sitemap_mode: row.config.sitemapMode ?? null,
           lastmod_max_age_days: row.config.lastmodMaxAgeDays ?? null,
           max_depth: row.config.maxDepth ?? null,
+          child_include_patterns: row.config.childIncludePatterns ?? null,
           page_mode: row.config.pageMode ?? null,
           extract: row.config.extract
             ? {
