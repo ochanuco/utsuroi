@@ -183,7 +183,7 @@ describe('runFetchSequence', () => {
       throw new Error('should not reach c');
     });
 
-    const result = await runFetchSequence(policy, executeFetcher);
+    const result = await runFetchSequence(policy, executeFetcher, { transientRetries: 0 });
     expect(result.outcome.ok).toBe(true);
     expect(result.attempts.map((a) => a.fetcherId)).toEqual(['a', 'b']);
     expect(executeFetcher).toHaveBeenCalledTimes(2);
@@ -210,7 +210,7 @@ describe('runFetchSequence', () => {
       return makeFailure('not_found');
     });
 
-    const result = await runFetchSequence(policy, executeFetcher);
+    const result = await runFetchSequence(policy, executeFetcher, { transientRetries: 0 });
     expect(result.outcome.ok).toBe(false);
     if (!result.outcome.ok) {
       expect(result.outcome.failureClass).toBe('not_found');
@@ -221,7 +221,7 @@ describe('runFetchSequence', () => {
   it('caps attempts at maxAttempts even if every failure would otherwise proceed', async () => {
     const executeFetcher = vi.fn(async (): Promise<FetchOutcome> => makeFailure('network_error'));
 
-    const result = await runFetchSequence(policy, executeFetcher, { maxAttempts: 2 });
+    const result = await runFetchSequence(policy, executeFetcher, { maxAttempts: 2, transientRetries: 0 });
     expect(result.attempts.map((a) => a.fetcherId)).toEqual(['a', 'b']);
     expect(result.outcome.ok).toBe(false);
     if (!result.outcome.ok) {
@@ -238,5 +238,116 @@ describe('runFetchSequence', () => {
     const executeFetcher = vi.fn(async (): Promise<FetchOutcome> => makeSuccess());
     await expect(runFetchSequence(invalid, executeFetcher)).rejects.toThrow(FetcherPolicyInvalidError);
     expect(executeFetcher).not.toHaveBeenCalled();
+  });
+});
+
+/** 実時間で待たず、呼び出された ms を記録するだけの sleep スタブ (ADR-0014 テスト用) */
+function fakeSleep(): { sleep: (ms: number) => Promise<void>; calls: number[] } {
+  const calls: number[] = [];
+  const sleep = async (ms: number): Promise<void> => {
+    calls.push(ms);
+  };
+  return { sleep, calls };
+}
+
+describe('runFetchSequence: transient retry (ADR-0014)', () => {
+  const policy: FetcherPolicy = { allowList: ['a'], orderList: [{ fetcherId: 'a' }] };
+
+  it('retries http_5xx and succeeds on the 3rd attempt, backing off 250ms then 500ms', async () => {
+    const { sleep, calls } = fakeSleep();
+    let call = 0;
+    const executeFetcher = vi.fn(async (): Promise<FetchOutcome> => {
+      call += 1;
+      if (call < 3) return makeFailure('http_5xx');
+      return makeSuccess();
+    });
+
+    const result = await runFetchSequence(policy, executeFetcher, { sleep });
+    expect(result.outcome.ok).toBe(true);
+    expect(result.attempts).toHaveLength(3);
+    expect(result.attempts.every((a) => a.fetcherId === 'a')).toBe(true);
+    expect(executeFetcher).toHaveBeenCalledTimes(3);
+    expect(calls).toEqual([250, 500]);
+  });
+
+  it('retries http_5xx 3 times total and fails for good when all attempts fail', async () => {
+    const { sleep, calls } = fakeSleep();
+    const executeFetcher = vi.fn(async (): Promise<FetchOutcome> => makeFailure('http_5xx'));
+
+    const result = await runFetchSequence(policy, executeFetcher, { sleep });
+    expect(result.outcome.ok).toBe(false);
+    if (!result.outcome.ok) {
+      expect(result.outcome.failureClass).toBe('http_5xx');
+    }
+    expect(result.attempts).toHaveLength(3);
+    expect(result.attempts.every((a) => a.fetcherId === 'a' && !a.outcome.ok)).toBe(true);
+    expect(executeFetcher).toHaveBeenCalledTimes(3);
+    expect(calls).toEqual([250, 500]);
+  });
+
+  it('does not retry http_403 (permanent failure)', async () => {
+    const { sleep, calls } = fakeSleep();
+    const executeFetcher = vi.fn(async (): Promise<FetchOutcome> => makeFailure('http_403'));
+
+    const result = await runFetchSequence(policy, executeFetcher, { sleep });
+    expect(result.outcome.ok).toBe(false);
+    expect(result.attempts).toHaveLength(1);
+    expect(executeFetcher).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual([]);
+  });
+
+  it('retries network_error the same way as http_5xx', async () => {
+    const { sleep, calls } = fakeSleep();
+    let call = 0;
+    const executeFetcher = vi.fn(async (): Promise<FetchOutcome> => {
+      call += 1;
+      if (call < 3) return makeFailure('network_error');
+      return makeSuccess();
+    });
+
+    const result = await runFetchSequence(policy, executeFetcher, { sleep });
+    expect(result.outcome.ok).toBe(true);
+    expect(result.attempts).toHaveLength(3);
+    expect(executeFetcher).toHaveBeenCalledTimes(3);
+    expect(calls).toEqual([250, 500]);
+  });
+
+  it('does not retry http_429 (deferred/Retry-After handles rate limiting instead)', async () => {
+    const { sleep, calls } = fakeSleep();
+    const executeFetcher = vi.fn(async (): Promise<FetchOutcome> => makeFailure('http_429'));
+
+    const result = await runFetchSequence(policy, executeFetcher, { sleep });
+    expect(result.outcome.ok).toBe(false);
+    expect(result.attempts).toHaveLength(1);
+    expect(executeFetcher).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual([]);
+  });
+
+  it('does not retry timeout', async () => {
+    const { sleep, calls } = fakeSleep();
+    const executeFetcher = vi.fn(async (): Promise<FetchOutcome> => makeFailure('timeout'));
+
+    const result = await runFetchSequence(policy, executeFetcher, { sleep });
+    expect(result.outcome.ok).toBe(false);
+    expect(result.attempts).toHaveLength(1);
+    expect(executeFetcher).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual([]);
+  });
+
+  it('exhausts retries on entry "a" then proceeds to entry "b" (proceedOn interaction)', async () => {
+    const { sleep, calls } = fakeSleep();
+    const twoEntryPolicy: FetcherPolicy = {
+      allowList: ['a', 'b'],
+      orderList: [{ fetcherId: 'a' }, { fetcherId: 'b' }],
+    };
+    const executeFetcher = vi.fn(async (fetcherId: string): Promise<FetchOutcome> => {
+      if (fetcherId === 'a') return makeFailure('http_5xx');
+      return makeSuccess();
+    });
+
+    const result = await runFetchSequence(twoEntryPolicy, executeFetcher, { sleep });
+    expect(result.outcome.ok).toBe(true);
+    expect(result.attempts.map((a) => a.fetcherId)).toEqual(['a', 'a', 'a', 'b']);
+    expect(calls).toEqual([250, 500]);
   });
 });
