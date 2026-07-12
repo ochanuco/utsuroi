@@ -432,6 +432,22 @@ pre.code-block {
   margin: 8px 0 0;
   font-size: 12.5px;
 }
+/* Sourceカードの設定サマリ (source.config の読み取り専用要約) */
+.source-config-summary-line {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+}
+/* page Sourceの「設定を編集」トグルボタン + インライン編集フォーム */
+.source-config-edit-toggle {
+  margin-top: 8px;
+}
+.source-config-edit-form {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
 .source-add-form {
   margin-top: 16px;
 }

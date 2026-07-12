@@ -59,6 +59,108 @@ const SITEMAP_MODE_LABELS = { direct: '一覧差分', traverse: '新着検知' }
  */
 const PAGE_MODE_LABELS = { content: '本文差分', extract: '新着検知' };
 
+// page × 新着検知 の構造化フィールド抽出 (ADR-0013)。作成フォーム・編集フォーム
+// (dev/ui-source-config-edit で追加した PATCH の入口) の両方から使う共通実装。
+const FIELD_KIND_LABELS = { label: 'ラベル', selector: 'セレクタ' };
+
+/**
+ * extract.fields (ADR-0013) の行エディタを構築する。各行 = 名前 + 種別 (ラベル/セレクタ) + 値 +
+ * 削除ボタン。最大12件はAPI側で検証するためここでは行数を制限しない (超過時はサーバーから
+ * invalid_field/400 が返り、その旨を表示する)。initialFields (API出力形式: name+selector|label)
+ * を渡すと、その内容で行をプリフィルする (編集フォームでの既存値表示用)。
+ */
+function createFieldsEditor(initialFields = []) {
+  const rows = [];
+  const rowsContainer = el('div', { class: 'fields-rows' });
+
+  function addRow(initial = { name: '', kind: 'label', value: '' }) {
+    const nameInput = el('input', { attrs: { type: 'text', placeholder: '名前（例: 価格）' } });
+    nameInput.value = initial.name;
+    const kindSelect = el(
+      'select',
+      {},
+      Object.entries(FIELD_KIND_LABELS).map(([value, labelText]) => el('option', { attrs: { value }, text: labelText }))
+    );
+    kindSelect.value = initial.kind;
+    const valueInput = el('input', { attrs: { type: 'text', placeholder: 'ラベル文字列 または CSSセレクタ' } });
+    valueInput.value = initial.value;
+    const row = el('div', { class: 'field-row fields-row' });
+    const removeButton = el('button', {
+      class: 'button-ghost',
+      text: 'この行を削除',
+      on: {
+        click: (event) => {
+          event.preventDefault();
+          const idx = rows.indexOf(entry);
+          if (idx >= 0) rows.splice(idx, 1);
+          row.remove();
+        },
+      },
+    });
+    row.appendChild(nameInput);
+    row.appendChild(kindSelect);
+    row.appendChild(valueInput);
+    row.appendChild(removeButton);
+    const entry = {
+      node: row,
+      read: () => ({ name: nameInput.value.trim(), kind: kindSelect.value, value: valueInput.value.trim() }),
+    };
+    rows.push(entry);
+    rowsContainer.appendChild(row);
+  }
+
+  function reset() {
+    rows.length = 0;
+    while (rowsContainer.firstChild) rowsContainer.removeChild(rowsContainer.firstChild);
+  }
+
+  const addRowButton = el('button', {
+    class: 'button-ghost',
+    text: 'フィールドを追加',
+    on: { click: (event) => { event.preventDefault(); addRow(); } },
+  });
+  const container = el('div', { class: 'field' }, [
+    el('label', { text: '構造化フィールド抽出 (任意・価格や所在地などを通知に含める)' }),
+    rowsContainer,
+    addRowButton,
+  ]);
+
+  // 初期値 (プリフィル)。API出力形式 {name, selector|label} を行の初期値へ変換する。
+  for (const f of initialFields) {
+    const kind = f.selector !== undefined && f.selector !== null ? 'selector' : 'label';
+    addRow({ name: f.name, kind, value: f[kind] ?? '' });
+  }
+
+  /**
+   * 入力を extract.fields (API入力形式) へ変換する。空行 (名前・値とも未入力) は無視する。
+   * 片方だけ入力されている行はエラー文字列を返す (呼び出し側で表示・送信中断する)。
+   */
+  function read() {
+    const fields = [];
+    for (const entry of rows) {
+      const row = entry.read();
+      if (!row.name && !row.value) continue; // 空行は無視
+      if (!row.name) return { error: 'フィールド名を入力してください。' };
+      if (!row.value) {
+        return { error: `フィールド "${row.name}" の${FIELD_KIND_LABELS[row.kind]}を入力してください。` };
+      }
+      fields.push({ name: row.name, [row.kind]: row.value });
+    }
+    return { fields };
+  }
+
+  return { container, read, reset };
+}
+
+/** カンマ区切り入力を trim 済み配列へ (空要素は捨てる)。空なら null */
+function parseSelectorList(raw) {
+  const list = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return list.length > 0 ? list : null;
+}
+
 // --- Sources (+ 監視状態の統合表示) -------------------------------------------
 //
 // 実運用ではMonitor:Source≒1:1のため、UIからMonitorという別概念を隠し、各Sourceカードに
@@ -253,6 +355,171 @@ function renderSourceDeleteButton(source, hideError, showError, reload) {
   });
 }
 
+/**
+ * Sourceカードの設定サマリ (読み取り専用)。source.config の主要キーを1〜2行のmutedテキストで
+ * 要約する。configが無い/主要キーが全て空なら null を返す (カードには何も追加しない)。
+ * sitemap_mode / page_mode はカードヘッダのバッジで既に表示済みのためここでは重複させない。
+ */
+function renderConfigSummary(source) {
+  const config = source.config;
+  if (!config) return null;
+
+  const lines = [];
+  if (source.type === 'page') {
+    if (config.page_mode === 'extract' && config.extract) {
+      const parts = [`アイテム: ${config.extract.item_selector}`];
+      if (config.extract.link_selector) parts.push(`リンク: ${config.extract.link_selector}`);
+      if (config.extract.title_selector) parts.push(`タイトル: ${config.extract.title_selector}`);
+      lines.push(parts.join('・'));
+      if (config.extract.fields && config.extract.fields.length > 0) {
+        lines.push(`フィールド: ${config.extract.fields.map((f) => f.name).join(', ')}`);
+      }
+    } else {
+      const parts = [];
+      if (config.include_selectors && config.include_selectors.length > 0) {
+        parts.push(`抽出セレクタ: ${config.include_selectors.join(', ')}`);
+      }
+      if (config.ignore_selectors && config.ignore_selectors.length > 0) {
+        parts.push(`除外セレクタ: ${config.ignore_selectors.join(', ')}`);
+      }
+      if (parts.length > 0) lines.push(parts.join('・'));
+    }
+  } else if (source.type === 'sitemap' || source.type === 'sitemap-index') {
+    const parts = [];
+    if (config.lastmod_max_age_days) parts.push(`lastmod上限: ${config.lastmod_max_age_days}日`);
+    if (config.max_depth) parts.push(`探索深さ: ${config.max_depth}`);
+    if (parts.length > 0) lines.push(parts.join('・'));
+  }
+
+  if (lines.length === 0) return null;
+  const frag = document.createDocumentFragment();
+  for (const line of lines) frag.appendChild(el('p', { class: 'muted source-config-summary-line', text: line }));
+  return frag;
+}
+
+/**
+ * page Sourceの「設定を編集」トグルボタン + インライン編集フォーム (PATCH /api/sources/:id,
+ * ADR-0013で追加済みのconfig限定更新APIの入口)。モード自体 (本文差分↔新着検知) の切り替えは
+ * 提供しない (page_modeは現在値を維持したまま送る)。
+ *
+ * PATCHはconfig全置換 (サーバー側でマージしない) のため、フォームに出さない既存キー
+ * (strip_query_params等) も現在値から引き継いで送信する。
+ */
+function renderSourceConfigEditForm(source, hideError, showError, reload) {
+  const config = source.config ?? {};
+  const isExtract = config.page_mode === 'extract';
+
+  const wrap = el('div', { class: 'hidden source-config-edit' });
+  const form = el('form', { class: 'source-config-edit-form' });
+
+  let itemSelectorInput;
+  let linkSelectorInput;
+  let titleSelectorInput;
+  let fieldsEditor;
+  let includeSelectorsInput;
+  let ignoreSelectorsInput;
+
+  if (isExtract) {
+    itemSelectorInput = el('input', { attrs: { type: 'text', required: true, placeholder: '.property_unit' } });
+    itemSelectorInput.value = config.extract?.item_selector ?? '';
+    linkSelectorInput = el('input', { attrs: { type: 'text', placeholder: 'a（任意）' } });
+    linkSelectorInput.value = config.extract?.link_selector ?? '';
+    titleSelectorInput = el('input', { attrs: { type: 'text', placeholder: 'h3（任意）' } });
+    titleSelectorInput.value = config.extract?.title_selector ?? '';
+
+    form.appendChild(
+      fieldRow([
+        field('アイテムセレクタ', itemSelectorInput),
+        field('リンクセレクタ (任意)', linkSelectorInput),
+        field('タイトルセレクタ (任意)', titleSelectorInput),
+      ])
+    );
+
+    fieldsEditor = createFieldsEditor(config.extract?.fields ?? []);
+    form.appendChild(fieldsEditor.container);
+  } else {
+    includeSelectorsInput = el('input', { attrs: { type: 'text', placeholder: '#main, article（空欄なら全体）' } });
+    includeSelectorsInput.value = (config.include_selectors ?? []).join(', ');
+    ignoreSelectorsInput = el('input', { attrs: { type: 'text', placeholder: '.ads, #sidebar（任意）' } });
+    ignoreSelectorsInput.value = (config.ignore_selectors ?? []).join(', ');
+
+    form.appendChild(
+      fieldRow([
+        field('抽出セレクタ (この範囲だけ監視・任意)', includeSelectorsInput),
+        field('除外セレクタ (任意)', ignoreSelectorsInput),
+      ])
+    );
+  }
+
+  const toggleButton = el('button', {
+    class: 'button-ghost',
+    attrs: { type: 'button' },
+    text: '設定を編集',
+    on: {
+      click: () => {
+        wrap.classList.toggle('hidden');
+        toggleButton.textContent = wrap.classList.contains('hidden') ? '設定を編集' : '編集を閉じる';
+      },
+    },
+  });
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    hideError();
+
+    // PATCHはconfig全置換のため、現在値 (page_mode・strip_query_params等、このフォームには
+    // 出していないキーを含む) から出発し、編集対象のキーだけ差し替える。
+    const nextConfig = {};
+    if (config.page_mode !== undefined && config.page_mode !== null) nextConfig.page_mode = config.page_mode;
+    if (config.strip_query_params && config.strip_query_params.length > 0) {
+      nextConfig.strip_query_params = config.strip_query_params;
+    }
+
+    if (isExtract) {
+      const itemSelector = itemSelectorInput.value.trim();
+      if (!itemSelector) {
+        showError('アイテムセレクタを入力してください。');
+        return;
+      }
+      const fieldsResult = fieldsEditor.read();
+      if (fieldsResult.error) {
+        showError(fieldsResult.error);
+        return;
+      }
+      const extract = { item_selector: itemSelector };
+      const linkSelector = linkSelectorInput.value.trim();
+      const titleSelector = titleSelectorInput.value.trim();
+      if (linkSelector) extract.link_selector = linkSelector;
+      if (titleSelector) extract.title_selector = titleSelector;
+      if (fieldsResult.fields.length > 0) extract.fields = fieldsResult.fields;
+      nextConfig.extract = extract;
+    } else {
+      const includeSelectors = parseSelectorList(includeSelectorsInput.value);
+      const ignoreSelectors = parseSelectorList(ignoreSelectorsInput.value);
+      if (includeSelectors) nextConfig.include_selectors = includeSelectors;
+      if (ignoreSelectors) nextConfig.ignore_selectors = ignoreSelectors;
+    }
+
+    try {
+      await api.patch(`/sources/${encodeURIComponent(source.id)}`, { config: nextConfig });
+    } catch (err) {
+      showError(`設定の保存に失敗しました: ${err.message}`);
+      return;
+    }
+
+    wrap.classList.add('hidden');
+    toggleButton.textContent = '設定を編集';
+    await reload();
+  });
+
+  form.appendChild(
+    el('div', { class: 'button-row', attrs: { style: 'margin-top:8px;' } }, [el('button', { attrs: { type: 'submit' }, text: '保存' })])
+  );
+  wrap.appendChild(form);
+
+  return { toggleButton, form: wrap };
+}
+
 function renderSourceCard(source, monitorsForSource, monitorsFetchFailed, onSourcesChanged) {
   const card = el('div', { class: 'source-card' });
   const errorEl = el('p', { class: 'error hidden' });
@@ -290,6 +557,17 @@ function renderSourceCard(source, monitorsForSource, monitorsFetchFailed, onSour
   }
   headerChildren.push(el('span', { class: 'source-card-url', text: source.url }));
   card.appendChild(el('div', { class: 'source-card-header' }, headerChildren));
+
+  const configSummary = renderConfigSummary(source);
+  if (configSummary) card.appendChild(configSummary);
+
+  // 設定編集はpage Sourceのみ (sitemap系は今回スコープ外・表示のみ)。監視状態の取得失敗とは
+  // 独立した機能のため、下の monitorsFetchFailed 分岐より前で組み込む。
+  if (source.type === 'page') {
+    const { toggleButton, form: editForm } = renderSourceConfigEditForm(source, hideError, showError, reload);
+    card.appendChild(el('div', { class: 'button-row source-config-edit-toggle' }, [toggleButton]));
+    card.appendChild(editForm);
+  }
 
   if (monitorsFetchFailed) {
     card.appendChild(
@@ -348,79 +626,9 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
   itemSelectorField.classList.add('hidden');
 
   // page × 新着検知 のときだけ表示する、構造化フィールド抽出の行エディタ (ADR-0013)。
-  // 各行 = 名前 + 種別 (ラベル/セレクタ) + 値 + 削除ボタン。最大12件はAPI側で検証するため
-  // ここでは行数を制限しない (超過時はサーバーから invalid_field/400 が返り、その旨を表示する)。
-  const FIELD_KIND_LABELS = { label: 'ラベル', selector: 'セレクタ' };
-  const fieldsRows = [];
-  const fieldsRowsContainer = el('div', { class: 'fields-rows' });
-
-  function addFieldRow() {
-    const nameInput = el('input', { attrs: { type: 'text', placeholder: '名前（例: 価格）' } });
-    const kindSelect = el(
-      'select',
-      {},
-      Object.entries(FIELD_KIND_LABELS).map(([value, labelText]) => el('option', { attrs: { value }, text: labelText }))
-    );
-    const valueInput = el('input', { attrs: { type: 'text', placeholder: 'ラベル文字列 または CSSセレクタ' } });
-    const row = el('div', { class: 'field-row fields-row' });
-    const removeButton = el('button', {
-      class: 'button-ghost',
-      text: 'この行を削除',
-      on: {
-        click: (event) => {
-          event.preventDefault();
-          const idx = fieldsRows.indexOf(entry);
-          if (idx >= 0) fieldsRows.splice(idx, 1);
-          row.remove();
-        },
-      },
-    });
-    row.appendChild(nameInput);
-    row.appendChild(kindSelect);
-    row.appendChild(valueInput);
-    row.appendChild(removeButton);
-    const entry = {
-      node: row,
-      read: () => ({ name: nameInput.value.trim(), kind: kindSelect.value, value: valueInput.value.trim() }),
-    };
-    fieldsRows.push(entry);
-    fieldsRowsContainer.appendChild(row);
-  }
-
-  function resetFieldsRows() {
-    fieldsRows.length = 0;
-    while (fieldsRowsContainer.firstChild) fieldsRowsContainer.removeChild(fieldsRowsContainer.firstChild);
-  }
-
-  const addFieldRowButton = el('button', {
-    class: 'button-ghost',
-    text: 'フィールドを追加',
-    on: { click: (event) => { event.preventDefault(); addFieldRow(); } },
-  });
-  const fieldsField = el('div', { class: 'field' }, [
-    el('label', { text: '構造化フィールド抽出 (任意・価格や所在地などを通知に含める)' }),
-    fieldsRowsContainer,
-    addFieldRowButton,
-  ]);
-  fieldsField.classList.add('hidden');
-
-  /**
-   * fieldsRows の入力を extract.fields (API入力形式) へ変換する。空行 (名前・値とも未入力) は
-   * 無視する。片方だけ入力されている行はエラー文字列を返す (呼び出し側で表示・送信中断する)。
-   */
-  function readFieldsInput() {
-    const fields = [];
-    for (const entry of fieldsRows) {
-      const row = entry.read();
-      if (!row.name && !row.value) continue; // 空行は無視
-      if (!row.name) return { error: 'フィールド名を入力してください。' };
-      if (!row.value) {
-        return { error: `フィールド "${row.name}" の${FIELD_KIND_LABELS[row.kind]}を入力してください。` };
-      }
-      fields.push({ name: row.name, [row.kind]: row.value });
-    }
-    return { fields };
-  }
+  // 実装は createFieldsEditor() に抽出済み (dev/ui-source-config-edit で編集フォームと共用)。
+  const fieldsEditor = createFieldsEditor();
+  fieldsEditor.container.classList.add('hidden');
 
   // page × 本文差分 のときだけ表示する、DOM抽出/除外セレクタ (任意・カンマ区切りで複数可)。
   // include: このセレクタの範囲だけを正規化・diff対象にする / ignore: この範囲を除外する
@@ -435,15 +643,6 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
   });
   const ignoreSelectorsField = field('除外セレクタ (任意)', ignoreSelectorsInput);
   ignoreSelectorsField.classList.add('hidden');
-
-  /** カンマ区切り入力を trim 済み配列へ (空要素は捨てる)。空なら null */
-  function parseSelectorList(raw) {
-    const list = raw
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-    return list.length > 0 ? list : null;
-  }
 
   function isSitemapType(type) {
     return type === 'sitemap' || type === 'sitemap-index';
@@ -481,7 +680,7 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
     const showExtract = isPage && modeSelect.value === 'extract';
     const showContent = isPage && modeSelect.value === 'content';
     itemSelectorField.classList.toggle('hidden', !showExtract);
-    fieldsField.classList.toggle('hidden', !showExtract);
+    fieldsEditor.container.classList.toggle('hidden', !showExtract);
     includeSelectorsField.classList.toggle('hidden', !showContent);
     ignoreSelectorsField.classList.toggle('hidden', !showContent);
   }
@@ -515,7 +714,7 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
             errorEl.classList.remove('hidden');
             return;
           }
-          const fieldsResult = readFieldsInput();
+          const fieldsResult = fieldsEditor.read();
           if (fieldsResult.error) {
             errorEl.textContent = fieldsResult.error;
             errorEl.classList.remove('hidden');
@@ -574,7 +773,7 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
         urlInput.value = '';
         intervalInput.value = '';
         itemSelectorInput.value = '';
-        resetFieldsRows();
+        fieldsEditor.reset();
         try {
           await onSourcesChanged();
         } catch (err) {
@@ -598,7 +797,7 @@ function renderAddSourceForm(siteId, onSourcesChanged) {
   // 本文差分のDOM抽出/除外セレクタは任意項目のため2行目に置く (1行目はモードに応じた必須系のみ)。
   form.appendChild(fieldRow([includeSelectorsField, ignoreSelectorsField]));
   // 新着検知の構造化フィールド抽出 (任意・行が可変のため単独行に置く)。
-  form.appendChild(fieldsField);
+  form.appendChild(fieldsEditor.container);
   form.appendChild(el('button', { attrs: { type: 'submit' }, text: 'Sourceを追加' }));
   form.appendChild(errorEl);
   wrap.appendChild(form);
