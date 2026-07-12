@@ -84,6 +84,20 @@ export class FetcherPolicyInvalidError extends Error {
 export const DEFAULT_MAX_ATTEMPTS = 3;
 
 /**
+ * エントリ内リトライの対象となる失敗クラス (ADR-0014)。
+ * http_5xx / network_error のみが対象。http_429 は Retry-After を尊重する
+ * job レベルの deferred 機構に任せ、timeout はリトライするとチェック時間が
+ * 倍々に伸びるため対象外とする。
+ */
+export const TRANSIENT_RETRY_FAILURE_CLASSES: readonly FailureClass[] = ['http_5xx', 'network_error'];
+
+/** エントリ内リトライの追加試行回数のデフォルト値 (初回 + 2回 = 計3試行、ADR-0014) */
+export const DEFAULT_TRANSIENT_RETRIES = 2;
+
+/** エントリ内リトライのバックオフ基準値 (ms)。再試行回数を乗じて使う (250ms, 500ms, ADR-0014) */
+export const DEFAULT_RETRY_BACKOFF_MS = 250;
+
+/**
  * 実行直前の再検証 (ADR-0005 不変条件4) と試行上限適用を行い、
  * 実際に試行する FetcherPolicyEntry の並びを返す。
  */
@@ -119,11 +133,24 @@ export interface FetchSequenceResult {
  * OrderList を順に試行する。成功した時点、または shouldProceedToNext が
  * false を返す失敗が発生した時点で停止する。全 attempt の履歴を返すため
  * 実際の試行順が再現可能になる (SPEC §8 / ADR-0005 Consequences)。
+ *
+ * エントリ内リトライ (ADR-0014): 各エントリの失敗が TRANSIENT_RETRY_FAILURE_CLASSES
+ * (http_5xx / network_error) に該当する場合、同一 fetcherId を最大 transientRetries 回
+ * (既定2回、計3試行) 再試行する。バックオフは retryBackoffMs × 再試行回数 (既定 250ms,
+ * 500ms)。orderList の次候補へは進まず、リトライも含めた全 attempt を履歴に積む。
+ * リトライを消化した (または対象外の失敗クラスだった) 後は、そのエントリの最後の
+ * outcome を使って従来どおり shouldProceedToNext を判定する。orderList/maxAttempts の
+ * 枠 (planAttempts) はエントリ内リトライでは消費しない。
  */
 export async function runFetchSequence(
   policy: FetcherPolicy,
   executeFetcher: (fetcherId: string) => Promise<FetchOutcome>,
-  opts?: { maxAttempts?: number }
+  opts?: {
+    maxAttempts?: number;
+    transientRetries?: number;
+    retryBackoffMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+  }
 ): Promise<FetchSequenceResult> {
   const plan = planAttempts(policy, opts);
 
@@ -131,12 +158,29 @@ export async function runFetchSequence(
     throw new FetcherPolicyInvalidError(['no fetcher attempts available (maxAttempts is 0)']);
   }
 
+  const transientRetries = opts?.transientRetries ?? DEFAULT_TRANSIENT_RETRIES;
+  const retryBackoffMs = opts?.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS;
+  const sleep = opts?.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
   const attempts: FetchAttemptRecord[] = [];
   let lastOutcome: FetchOutcome | undefined;
 
   for (const entry of plan) {
-    const outcome = await executeFetcher(entry.fetcherId);
+    let outcome = await executeFetcher(entry.fetcherId);
     attempts.push({ fetcherId: entry.fetcherId, outcome });
+
+    let retryAttemptNumber = 0;
+    while (
+      !outcome.ok &&
+      retryAttemptNumber < transientRetries &&
+      TRANSIENT_RETRY_FAILURE_CLASSES.includes(outcome.failureClass)
+    ) {
+      retryAttemptNumber += 1;
+      await sleep(retryBackoffMs * retryAttemptNumber);
+      outcome = await executeFetcher(entry.fetcherId);
+      attempts.push({ fetcherId: entry.fetcherId, outcome });
+    }
+
     lastOutcome = outcome;
 
     if (outcome.ok) {
