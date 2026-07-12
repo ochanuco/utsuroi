@@ -40,6 +40,14 @@
  * ネストした子sitemap-index (中間ノード) の watermark 前進についても、自分自身の展開だけでなく
  * 再帰先 (孫以下) で何らかの打ち切りが発生していないかを見てから判断する
  * (traverseChild 内の「再帰後の打ち切り総数チェック」コメント参照)。
+ *
+ * child_include_patterns (ADR-0015, docs/adr/0015-sitemap-child-include-patterns.md):
+ * sitemap/sitemap-index Source の config.childIncludePatterns が非空のとき、子Sitemap選択
+ * (selectChildEntries) の段でパターンにマッチしない子を除外する。除外はcutoff/lastmod判定と
+ * 同じ「選択」段で行われるため、MAX_CHILD_SITEMAPS の枠 (toProcess への slice) は消費しない
+ * (Target登録もフェッチも行わない)。selectChildEntries は traverseSitemapIndex の再帰呼び出し
+ * (traverseChild 8.) でも常に同じ ctx.source.config を参照するため、ネストした子sitemap-index
+ * (中間ノード) にも同じ判定が自動的に効く (種別ごとの分岐を別途持たない)。
  */
 import { parseSource } from '../adapters';
 import { AdapterParseError } from '../adapters/errors';
@@ -96,6 +104,12 @@ interface TraversalCounts {
   fetchBudgetTruncated: number;
   /** チェック全体で実行した子Sitemapフェッチ回数 (フェッチ予算の消費量) */
   fetchesUsed: number;
+  /**
+   * child_include_patterns (ADR-0015) にマッチせず選択段で除外した子Sitemap数。
+   * originBlocked / missingLastmodSkipped と同様、利用者が意図的に設定した定常フィルタであり
+   * 「打ち切り」ではないため truncationTotal() には含めない (下記 truncationTotal 参照)。
+   */
+  patternExcluded: number;
 }
 
 function newCounts(): TraversalCounts {
@@ -107,6 +121,7 @@ function newCounts(): TraversalCounts {
     feedItemsTruncated: 0,
     fetchBudgetTruncated: 0,
     fetchesUsed: 0,
+    patternExcluded: 0,
   };
 }
 
@@ -145,6 +160,37 @@ interface SelectedChildEntry {
 }
 
 /**
+ * '*' (0文字以上の任意文字) のみをワイルドカードとして扱う glob パターンを、ファイル名全体に
+ * アンカーした正規表現へ変換する (ADR-0015)。'*' 以外の文字は正規表現メタ文字も含めすべて
+ * リテラル扱いにする (例: 'post-sitemap.xml' の '.' が任意の1文字にマッチしてしまうと
+ * 'post-sitemapXxml' のような無関係なファイル名まで拾ってしまうため)。
+ */
+function globToRegExp(pattern: string): RegExp {
+  const escaped = pattern
+    .split('*')
+    .map((literal) => literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('.*');
+  return new RegExp(`^${escaped}$`);
+}
+
+/**
+ * 子Sitemap URL のパス最終セグメント (ファイル名) が、いずれかの child_include_patterns に
+ * マッチするかどうかを判定する (ADR-0015)。大文字小文字は区別する。
+ * URL 自体が不正でパースできない場合は安全側 (マッチしない = traverse対象外) に倒す。
+ * export しているのは単体テスト (test/pipeline/sitemapTraversal.test.ts) から直接検証するため。
+ */
+export function matchesChildIncludePattern(childUrl: string, patterns: string[]): boolean {
+  let filename: string;
+  try {
+    const pathname = new URL(childUrl).pathname;
+    filename = pathname.slice(pathname.lastIndexOf('/') + 1);
+  } catch {
+    return false;
+  }
+  return patterns.some((pattern) => globToRegExp(pattern).test(filename));
+}
+
+/**
  * sitemap-index 配下の子Sitemapエントリを cutoff でフィルタし、lastmod 降順にソートする。
  * - lastmod の無い子は除外する (実URL側と同様に missingLastmodSkipped へ数える)。lastmod が
  *   無いと watermarkゲート (traverseChild 4.) が成立せず、baseline 後も毎チェック無条件で
@@ -153,11 +199,19 @@ interface SelectedChildEntry {
  *   Direct モード (lastmod非依存) を使う。
  * - cutoff外の古い子も除外する。どちらも「打ち切り」ではなく通常のフィルタ (originBlocked と
  *   同種の定常スキップ) なので audit には数えない (スパム防止の一貫性)。
+ * - childIncludePatterns (ADR-0015) が非空なら、いずれのパターンにもマッチしない子をここで
+ *   除外する (patternExcluded へ計上)。MAX_CHILD_SITEMAPS の枠割り当て (呼び出し元の slice) より
+ *   前段で除外するため、マッチしない子は探索枠を一切消費しない。
  * ソートにより、MAX_CHILD_SITEMAPS の枠を「文書順の先頭」ではなく「実際に最近変化した子」が
  * 優先的に得られるようにする (安定して21件以上の子が並ぶサイトでの恒久除外を防ぐ)。
  * Array#sort は安定ソートなので、lastmod が同値の場合は文書順を維持する。
  */
-function selectChildEntries(entries: ChildEntry[], cutoffIso: string, counts: TraversalCounts): SelectedChildEntry[] {
+function selectChildEntries(
+  entries: ChildEntry[],
+  cutoffIso: string,
+  counts: TraversalCounts,
+  childIncludePatterns: string[] | undefined,
+): SelectedChildEntry[] {
   const eligible: SelectedChildEntry[] = [];
   for (const e of entries) {
     if (e.lastmod === null) {
@@ -165,6 +219,10 @@ function selectChildEntries(entries: ChildEntry[], cutoffIso: string, counts: Tr
       continue;
     }
     if (e.lastmod < cutoffIso) continue;
+    if (childIncludePatterns && childIncludePatterns.length > 0 && !matchesChildIncludePattern(e.loc, childIncludePatterns)) {
+      counts.patternExcluded += 1;
+      continue;
+    }
     eligible.push({ loc: e.loc, lastmod: e.lastmod });
   }
   return eligible.sort((a, b) => (a.lastmod < b.lastmod ? 1 : a.lastmod > b.lastmod ? -1 : 0)); // 降順 (新しい方を優先)
@@ -376,10 +434,11 @@ export async function traverseSitemapIndex(
     .filter((item): item is typeof item & { url: string } => item.url !== null)
     .map((item) => ({ loc: item.url, lastmod: item.updatedAt }));
 
-  // cutoff適用 (古い子・lastmod無しの子は通常のフィルタとして除外) + lastmod降順ソート後に
-  // MAX_CHILD_SITEMAPS の枠を割り当てる。childrenTruncated は「フィルタ後」の超過分だけ数える
-  // (cutoff外の子を除外したこと自体は打ち切りではないため、audit スパム防止の一貫性)。
-  const selected = selectChildEntries(childEntries, cutoffIso, counts);
+  // cutoff適用 (古い子・lastmod無しの子は通常のフィルタとして除外) + child_include_patterns
+  // (ADR-0015、非マッチ子も同段で除外) + lastmod降順ソート後に MAX_CHILD_SITEMAPS の枠を
+  // 割り当てる。childrenTruncated は「フィルタ後」の超過分だけ数える (cutoff外・非マッチの子を
+  // 除外したこと自体は打ち切りではないため、audit スパム防止の一貫性)。
+  const selected = selectChildEntries(childEntries, cutoffIso, counts, ctx.source.config?.childIncludePatterns);
   const toProcess = selected.slice(0, MAX_CHILD_SITEMAPS);
   if (selected.length > MAX_CHILD_SITEMAPS) {
     counts.childrenTruncated += selected.length - MAX_CHILD_SITEMAPS;
@@ -399,8 +458,9 @@ export async function traverseSitemapIndex(
  * - audit_events (action: 'monitor.traversal_truncated'): 「実際に作業を打ち切った」
  *   (childrenTruncated + depthTruncated + feedItemsTruncated + fetchBudgetTruncated > 0,
  *   truncationTotal() 参照) 場合のみ記録する。originBlocked (越境の子を毎回除外する) と
- *   missingLastmodSkipped (lastmod無しの実URLを毎回除外する) は、対象のSitemap構成次第では
- *   *毎チェック定常的に*発生しうる正常なフィルタ動作であり、ADR-0010 §5が指す「打ち切り」
+ *   missingLastmodSkipped (lastmod無しの実URLを毎回除外する)、patternExcluded
+ *   (child_include_patterns にマッチしない子を毎回除外する、ADR-0015) は、対象のSitemap構成
+ *   次第では*毎チェック定常的に*発生しうる正常なフィルタ動作であり、ADR-0010 §5が指す「打ち切り」
  *   (本来処理すべきだった対象を上限のせいで諦めた) とは性質が異なる。これを audit 発火条件に
  *   含めると、そのようなSourceでは毎チェック audit_events に1行ずつ積み上がり続けてしまう
  *   (スパム化・監査ログとしての意味が薄れる)。
@@ -410,15 +470,23 @@ async function recordTruncationIfAny(
   counts: TraversalCounts,
   limits: { lastmodMaxAgeDays: number; maxDepth: number; maxFetchesPerCheck: number },
 ): Promise<void> {
-  const { childrenTruncated, depthTruncated, originBlocked, missingLastmodSkipped, feedItemsTruncated, fetchBudgetTruncated } =
-    counts;
+  const {
+    childrenTruncated,
+    depthTruncated,
+    originBlocked,
+    missingLastmodSkipped,
+    feedItemsTruncated,
+    fetchBudgetTruncated,
+    patternExcluded,
+  } = counts;
   const anyCount =
     childrenTruncated > 0 ||
     depthTruncated > 0 ||
     originBlocked > 0 ||
     missingLastmodSkipped > 0 ||
     feedItemsTruncated > 0 ||
-    fetchBudgetTruncated > 0;
+    fetchBudgetTruncated > 0 ||
+    patternExcluded > 0;
   if (!anyCount) return;
 
   const payload = {
@@ -428,6 +496,7 @@ async function recordTruncationIfAny(
     missingLastmodSkipped,
     feedItemsTruncated,
     fetchBudgetTruncated,
+    patternExcluded,
     maxChildSitemaps: MAX_CHILD_SITEMAPS,
     maxDepth: limits.maxDepth,
     lastmodMaxAgeDays: limits.lastmodMaxAgeDays,

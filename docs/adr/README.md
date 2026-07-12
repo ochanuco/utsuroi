@@ -16,3 +16,4 @@
 | [0012](0012-destination-archive.md) | Destinationのアーカイブ（soft delete、配送履歴を保ったままwebhookを破棄） | Proposed |
 | [0013](0013-extract-structured-fields.md) | アイテム抽出モードの構造化フィールド抽出（price/所在地等をdiff_previewに配線、PATCH /api/sources/:id） | Proposed |
 | [0014](0014-transient-fetch-retry.md) | 一過性フェッチ失敗のチェック内リトライ（http_5xx/network_errorを250ms×nバックオフで計3試行） | Proposed |
+| [0015](0015-sitemap-child-include-patterns.md) | traverse対象の子sitemapをincludeパターンで絞り込む（ファイル名globで記事以外のアーカイブ系を除外） | Proposed |
