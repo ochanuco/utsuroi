@@ -23,7 +23,7 @@ import {
   type TargetRow,
 } from '../db';
 import { bodyKey, normalizedKey, diffKey, putIfAbsent, truncateDiffPreview } from './r2';
-import { fanoutChange } from './notify';
+import { notifyDetectedChanges } from './notify';
 import type { CheckContext } from './types';
 
 /** Sitemap Direct ドキュメントの正規化フォーマット版。フォーマット変更時にインクリメント */
@@ -151,12 +151,9 @@ export async function processSitemapDirect(
     await ctx.env.BODIES.put(diffR2Key, diff.unifiedDiff);
   }
 
-  // inserted.inserted が false (dedupeKey 重複) でも、前回実行が Change 挿入後・
-  // delivery/enqueue 前にクラッシュした可能性があるため配送は常に inserted.row に対して
-  // 行う (at-least-once 復旧、fanoutChange の docstring 参照)。changeIds は今回新規検出した
-  // Change のみを表すため inserted.inserted の場合のみ積む。
-  await fanoutChange(ctx, inserted.row);
-  if (inserted.inserted) {
-    ctx.changeIds.push(inserted.row.id);
-  }
+  // 配送 (fanout) と changeIds 追加は Notify段 (notifyDetectedChanges) に委ねる。Sitemap Direct は
+  // 1チェックにつき Change 高々1件のため、DetectedChange 1要素の配列として渡す。snapshotベースの
+  // 差分検知で watermark を持たないため watermarkAdvance は不要。at-least-once 復旧の順序
+  // (inserted の真偽に関わらず fanout → inserted のときだけ changeIds) は Notify段が保証する。
+  await notifyDetectedChanges(ctx, [{ row: inserted.row, inserted: inserted.inserted }]);
 }
