@@ -15,7 +15,7 @@ import {
   type TargetRow,
 } from '../db';
 import { bodyKey, normalizedKey, diffKey, putIfAbsent, truncateDiffPreview } from './r2';
-import { fanoutChange } from './notify';
+import { notifyDetectedChanges } from './notify';
 import type { CheckContext } from './types';
 
 export async function processPageContent(
@@ -111,12 +111,9 @@ export async function processPageContent(
     await ctx.env.BODIES.put(diffR2Key, diff.unifiedDiff);
   }
 
-  // inserted.inserted が false (dedupeKey 重複) でも、前回実行が Change 挿入後・delivery/enqueue 前に
-  // クラッシュした可能性があるため、配送は常に inserted.row に対して行う (at-least-once 復旧、
-  // 詳細は fanoutChange の docstring 参照)。changeIds だけは「今回新規検出した change」を表すため
-  // inserted.inserted の場合のみ積む。
-  await fanoutChange(ctx, inserted.row);
-  if (inserted.inserted) {
-    ctx.changeIds.push(inserted.row.id);
-  }
+  // 配送 (fanout) と changeIds 追加は Notify段 (notifyDetectedChanges) に委ねる。本文差分は
+  // 1チェックにつき Change 高々1件のため、DetectedChange 1要素の配列として渡す。snapshotベースの
+  // 差分検知で watermark を持たないため watermarkAdvance は不要。at-least-once 復旧の順序
+  // (inserted の真偽に関わらず fanout → inserted のときだけ changeIds) は Notify段が保証する。
+  await notifyDetectedChanges(ctx, [{ row: inserted.row, inserted: inserted.inserted }]);
 }
