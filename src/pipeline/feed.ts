@@ -47,11 +47,10 @@ import {
   insertChangeIfNew,
   upsertTarget,
   setTargetLastChecked,
-  setTargetLastKnownUpdatedAt,
   type TargetRow,
 } from '../db';
 import { bodyKey, putIfAbsent } from './r2';
-import { fanoutChange } from './notify';
+import { notifyDetectedChanges, type DetectedChange } from './notify';
 import type { CheckContext } from './types';
 
 /** Sitemap Index 配下の子 Sitemap の取得上限 (1回のチェックあたり) */
@@ -106,22 +105,29 @@ export interface ProcessFeedItemsOptions {
   summaryAsDiffPreview?: boolean;
 }
 
+/** detectFeedChanges の戻り値。Notify段 (notifyDetectedChanges) にそのまま渡す。 */
+interface DetectFeedChangesResult {
+  /** item 処理順に積んだ検出結果。baseline チェックや skip のみだった場合は空配列。 */
+  detected: DetectedChange[];
+  truncatedCount: number;
+}
+
 /**
- * rss/atom/sitemap の item 一覧を Target 化し、新規/更新を検出して通知する。
+ * Detect段 (ADR-0016): rss/atom/sitemap の item 一覧を Target 化し、新規/更新を検出する。
+ * Change の挿入 (insertChangeIfNew) までを担当し、fanout・changeIds 追加・watermark 前進は
+ * 一切行わない — それらは Notify段 (notify.ts の notifyDetectedChanges) が detected を
+ * item 処理順に消費して行う (processFeedItems 参照)。
  *
  * @param maxItems 1回の呼び出しで処理する item 数の上限 (既定 MAX_FEED_ITEMS_PER_CHECK)。
  *   超過分はスキップし (target/change を作らない)、次回以降のチェックに持ち越される。
  *   テストで小さい値を注入できるよう引数化している。
- * @returns truncatedCount。rss/atom 経路 (processFeedContent) は戻り値を無視してよいが、
- *   sitemapTraversal.ts の traverseChild は「打ち切りが発生した子は watermark を進めない」
- *   判断にこの値を使う (ADR-0010 §5「超過分は次回以降のチェックに持ち越す」に従うため)。
  */
-export async function processFeedItems(
+async function detectFeedChanges(
   ctx: CheckContext,
   items: FeedItem[],
-  maxItems: number = MAX_FEED_ITEMS_PER_CHECK,
-  opts: ProcessFeedItemsOptions = {},
-): Promise<ProcessFeedItemsResult> {
+  maxItems: number,
+  opts: ProcessFeedItemsOptions,
+): Promise<DetectFeedChangesResult> {
   const nowIso = new Date(ctx.now()).toISOString();
 
   // monitor の初回チェックか否か。ctx.monitor は runMonitorCheck 冒頭で読み込まれた
@@ -139,6 +145,8 @@ export async function processFeedItems(
         `(carried over to a future check)`,
     );
   }
+
+  const detected: DetectedChange[] = [];
 
   for (const item of toProcess) {
     // FeedItem.url が無い entry は Target (UNIQUE(monitor_id, url)) を作れないためスキップする。
@@ -182,8 +190,8 @@ export async function processFeedItems(
         // summary (fields整形結果) を diff_preview として通知に載せる。
         diffPreview: opts.summaryAsDiffPreview ? (item.summary ?? undefined) : undefined,
       });
-      await fanoutChange(ctx, inserted.row);
-      if (inserted.inserted) ctx.changeIds.push(inserted.row.id);
+      // 'new' は upsertTarget 時に初期 watermark を記録済みのため watermarkAdvance は不要。
+      detected.push({ row: inserted.row, inserted: inserted.inserted });
       continue;
     }
 
@@ -206,16 +214,43 @@ export async function processFeedItems(
         detectedAt: nowIso,
         diffPreview: opts.summaryAsDiffPreview ? (item.summary ?? undefined) : undefined,
       });
-      await fanoutChange(ctx, inserted.row);
-      if (inserted.inserted) ctx.changeIds.push(inserted.row.id);
-      // watermark は Change 挿入 (dedupeKey 重複による recovery を含む) + 通知試行の後にのみ進める。
-      // ここより前に (例えば upsertTarget 呼び出し時点で) 無条件に進めてしまうと、Change 挿入後・
-      // 通知完了前にクラッシュした場合の再試行が「既に処理済み」と誤認され、at-least-once 復旧
-      // (fanoutChange の再試行) が働かなくなってしまう。
-      await setTargetLastKnownUpdatedAt(ctx.db, target.id, item.updatedAt);
+      // watermark 前進は Change 挿入 (dedupeKey 重複による recovery を含む) + 通知試行の後に
+      // のみ行う (Notify段の notifyDetectedChanges に委ねる)。ここで先に進めてしまうと、
+      // Change 挿入後・通知完了前にクラッシュした場合の再試行が「既に処理済み」と誤認され、
+      // at-least-once 復旧 (fanoutChange の再試行) が働かなくなってしまう。
+      detected.push({
+        row: inserted.row,
+        inserted: inserted.inserted,
+        watermarkAdvance: { targetId: target.id, updatedAt: item.updatedAt },
+      });
     }
   }
 
+  return { detected, truncatedCount };
+}
+
+/**
+ * rss/atom/sitemap の item 一覧を Target 化し、新規/更新を検出して通知する。
+ * Detect段 (detectFeedChanges) → Notify段 (notify.ts の notifyDetectedChanges) の順に呼ぶだけの
+ * オーケストレータ (ADR-0016 Step 3)。Detect段が全 item の Change 挿入を先に済ませ、
+ * Notify段がその結果を item 処理順に fanout → changeIds 追加 → watermark 前進する。
+ * item 単位で完結していた分割前と最終的な DB 状態・Queue 送信集合・changeIds は同一になる。
+ *
+ * @param maxItems 1回の呼び出しで処理する item 数の上限 (既定 MAX_FEED_ITEMS_PER_CHECK)。
+ *   超過分はスキップし (target/change を作らない)、次回以降のチェックに持ち越される。
+ *   テストで小さい値を注入できるよう引数化している。
+ * @returns truncatedCount。rss/atom 経路 (processFeedContent) は戻り値を無視してよいが、
+ *   sitemapTraversal.ts の traverseChild は「打ち切りが発生した子は watermark を進めない」
+ *   判断にこの値を使う (ADR-0010 §5「超過分は次回以降のチェックに持ち越す」に従うため)。
+ */
+export async function processFeedItems(
+  ctx: CheckContext,
+  items: FeedItem[],
+  maxItems: number = MAX_FEED_ITEMS_PER_CHECK,
+  opts: ProcessFeedItemsOptions = {},
+): Promise<ProcessFeedItemsResult> {
+  const { detected, truncatedCount } = await detectFeedChanges(ctx, items, maxItems, opts);
+  await notifyDetectedChanges(ctx, detected);
   return { truncatedCount };
 }
 
