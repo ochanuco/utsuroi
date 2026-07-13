@@ -8,7 +8,7 @@
  * (pageContent.ts / sitemapDirect.ts はいずれも kind: 'updated' の Change のみを渡すため、
  * 統合前にハードコードしていた 'updated' と結果は一致する)。
  */
-import { createDeliveryIfNew, listMatchingSubscriptions, type ChangeRow } from '../db';
+import { createDeliveryIfNew, listMatchingSubscriptions, setTargetLastKnownUpdatedAt, type ChangeRow } from '../db';
 import type { CheckContext } from './types';
 
 /**
@@ -29,6 +29,34 @@ export async function fanoutChange(ctx: CheckContext, change: ChangeRow): Promis
     const delivery = await createDeliveryIfNew(ctx.db, change.id, sub.destinationId);
     if (delivery.inserted) {
       await ctx.env.NOTIFY_QUEUE.send({ deliveryId: delivery.row.id });
+    }
+  }
+}
+
+/**
+ * Detect段 (detectFeedChanges) が検出した Change 1件分。Notify段への中間表現 (ADR-0016)。
+ * - row: insertChangeIfNew が返した Change 行 (dedupeKey 重複で既存を返した場合も含む)
+ * - inserted: 今回新規に挿入されたか (changeIds に積むのは true のときだけ)
+ * - watermarkAdvance: 'updated' 検出時のみ設定。fanout 完了後に Target の last_known_updated_at を
+ *   この値へ前進させる (新規Target/'new' 検出時は upsert 時に初期 watermark を記録済みのため不要)。
+ */
+export interface DetectedChange {
+  row: ChangeRow;
+  inserted: boolean;
+  watermarkAdvance?: { targetId: string; updatedAt: string };
+}
+
+/**
+ * Detect段が集めた DetectedChange 群をまとめて配信する Notify段 (ADR-0016)。
+ * 各 change について fanoutChange → (inserted なら) changeIds 追加 → (watermarkAdvance があれば)
+ * watermark 前進、の順で処理する。この順序が at-least-once 復旧の要 (watermark は必ず fanout 後)。
+ */
+export async function notifyDetectedChanges(ctx: CheckContext, detected: DetectedChange[]): Promise<void> {
+  for (const d of detected) {
+    await fanoutChange(ctx, d.row);
+    if (d.inserted) ctx.changeIds.push(d.row.id);
+    if (d.watermarkAdvance) {
+      await setTargetLastKnownUpdatedAt(ctx.db, d.watermarkAdvance.targetId, d.watermarkAdvance.updatedAt);
     }
   }
 }
