@@ -110,13 +110,23 @@ type RecipeKey = keyof typeof RECIPES;
  * - それ以外 (rss/atom): feed 本文処理
  */
 function resolveRecipeKey(source: SourceRow): RecipeKey {
-  if (source.type === 'page') {
-    return source.config?.pageMode === 'extract' ? 'page:extract' : 'page:content';
+  switch (source.type) {
+    case 'page':
+      return source.config?.pageMode === 'extract' ? 'page:extract' : 'page:content';
+    case 'sitemap':
+    case 'sitemap-index':
+      return source.config?.sitemapMode === 'traverse' ? 'sitemap:traverse' : 'sitemap:direct';
+    case 'rss':
+    case 'atom':
+      return 'feed';
+    default: {
+      // 網羅性チェック: SourceType に新種別が追加されたら、この never 代入が tsc エラーになる。
+      // resolveContentProcessor と describePipeline が同じレシピを共有する single source of truth
+      // のため、種別の取りこぼしは実行時 processor 選択と可視化の両方を誤らせる — ビルドで止める。
+      const _exhaustive: never = source.type;
+      return _exhaustive;
+    }
   }
-  if (source.type === 'sitemap' || source.type === 'sitemap-index') {
-    return source.config?.sitemapMode === 'traverse' ? 'sitemap:traverse' : 'sitemap:direct';
-  }
-  return 'feed'; // rss / atom
 }
 
 /**
