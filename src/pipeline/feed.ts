@@ -43,17 +43,15 @@ import { sha256Hex } from '../shared/hash';
 import { extractCharsetFromContentType } from '../normalize';
 import { checkUrlForSsrf } from '../net';
 import {
-  createDeliveryIfNew,
   createSnapshot,
   insertChangeIfNew,
-  listMatchingSubscriptions,
   upsertTarget,
   setTargetLastChecked,
   setTargetLastKnownUpdatedAt,
-  type ChangeRow,
   type TargetRow,
 } from '../db';
 import { bodyKey, putIfAbsent } from './r2';
+import { fanoutChange } from './notify';
 import type { CheckContext } from './types';
 
 /** Sitemap Index 配下の子 Sitemap の取得上限 (1回のチェックあたり) */
@@ -90,28 +88,6 @@ export async function getExistingTargetWatermark(
   return row
     ? { exists: true, lastKnownUpdatedAt: row.last_known_updated_at ?? null }
     : { exists: false, lastKnownUpdatedAt: null };
-}
-
-/**
- * change の subscription マッチ + delivery 作成 + NOTIFY_QUEUE enqueue を行う。
- * createDeliveryIfNew は冪等 (insert-if-new) なので、insertChangeIfNew が
- * dedupeKey 重複 (inserted:false) を返した場合でも安全に呼べる — 前回実行が
- * change 挿入後・delivery/enqueue 前にクラッシュしたケースの at-least-once 復旧のため、
- * 呼び出し側は inserted の真偽に関わらず常にこの関数を呼ぶこと (changeIds への追加は
- * 呼び出し側で inserted.inserted の場合のみ行う)。
- */
-async function notifyForChange(ctx: CheckContext, change: ChangeRow): Promise<void> {
-  const subs = await listMatchingSubscriptions(ctx.db, {
-    siteId: ctx.site.id,
-    monitorId: ctx.monitor.id,
-    kind: change.kind,
-  });
-  for (const sub of subs) {
-    const delivery = await createDeliveryIfNew(ctx.db, change.id, sub.destinationId);
-    if (delivery.inserted) {
-      await ctx.env.NOTIFY_QUEUE.send({ deliveryId: delivery.row.id });
-    }
-  }
 }
 
 /** processFeedItems の戻り値。呼び出し側 (sitemapTraversal.ts) が打ち切り件数を検査できるようにする */
@@ -206,7 +182,7 @@ export async function processFeedItems(
         // summary (fields整形結果) を diff_preview として通知に載せる。
         diffPreview: opts.summaryAsDiffPreview ? (item.summary ?? undefined) : undefined,
       });
-      await notifyForChange(ctx, inserted.row);
+      await fanoutChange(ctx, inserted.row);
       if (inserted.inserted) ctx.changeIds.push(inserted.row.id);
       continue;
     }
@@ -230,12 +206,12 @@ export async function processFeedItems(
         detectedAt: nowIso,
         diffPreview: opts.summaryAsDiffPreview ? (item.summary ?? undefined) : undefined,
       });
-      await notifyForChange(ctx, inserted.row);
+      await fanoutChange(ctx, inserted.row);
       if (inserted.inserted) ctx.changeIds.push(inserted.row.id);
       // watermark は Change 挿入 (dedupeKey 重複による recovery を含む) + 通知試行の後にのみ進める。
       // ここより前に (例えば upsertTarget 呼び出し時点で) 無条件に進めてしまうと、Change 挿入後・
       // 通知完了前にクラッシュした場合の再試行が「既に処理済み」と誤認され、at-least-once 復旧
-      // (notifyForChange の再試行) が働かなくなってしまう。
+      // (fanoutChange の再試行) が働かなくなってしまう。
       await setTargetLastKnownUpdatedAt(ctx.db, target.id, item.updatedAt);
     }
   }
