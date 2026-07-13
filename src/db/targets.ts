@@ -96,7 +96,7 @@ export async function setTargetLastChecked(
  * feed.ts の 'updated' Change 検出フローで、Change 挿入 + 通知ファンアウトの試行が完了した
  * *後にのみ* 呼ぶことを想定している — upsertTarget 呼び出し時点で無条件に進めてしまうと、
  * Change 挿入後・通知完了前にクラッシュしたケースの再試行が「既に処理済み」と誤認されて
- * at-least-once 復旧 (再度 insertChangeIfNew→notifyForChange を試す) が働かなくなるため。
+ * at-least-once 復旧 (再度 insertChangeIfNew→fanoutChange を試す) が働かなくなるため。
  *
  * watermark は high-water mark (単調増加): 既存値より新しい場合にのみ更新する条件を SQL 側に
  * 入れている。無条件 UPDATE だと、並行実行 (手動 run と scheduled run の競合等) が read-check-

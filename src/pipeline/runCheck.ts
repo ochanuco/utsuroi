@@ -28,11 +28,7 @@ import {
 } from '../db';
 import { createD1RobotsCache } from './robotsCache';
 import { fetchTargetThroughPolicy } from './fetchTarget';
-import { processPageContent } from './pageContent';
-import { processPageItems } from './pageItems';
-import { processFeedContent } from './feed';
-import { processSitemapDirect } from './sitemapDirect';
-import { processSitemapTraversal } from './sitemapTraversal';
+import { resolveContentProcessor } from './contentProcessor';
 import { hostLimiterFactory } from '../do/hostObject';
 import type { CheckContext, CheckRunResult, RunMonitorCheckOptions } from './types';
 
@@ -237,21 +233,14 @@ export async function runMonitorCheck(
       // URLをTarget化しない)。config.sitemapMode === 'traverse' の場合のみ Sitemap 探索
       // (ADR-0010 Phase B, sitemapTraversal.ts) へ切り替える: lastmodが変化した子だけ
       // 再帰展開し、実URLの新規出現・lastmod更新を processFeedItems 経由で配信する。
-      if (source.type === 'page') {
-        if (source.config?.pageMode === 'extract') {
-          await processPageItems(ctx, target, lastAttemptId, outcome as FetchSuccess, outcome.body);
-        } else {
-          await processPageContent(ctx, target, latestSnapshot, lastAttemptId, outcome as FetchSuccess, outcome.body);
-        }
-      } else if (source.type === 'sitemap' || source.type === 'sitemap-index') {
-        if (source.config?.sitemapMode === 'traverse') {
-          await processSitemapTraversal(ctx, target, lastAttemptId, outcome as FetchSuccess, outcome.body);
-        } else {
-          await processSitemapDirect(ctx, target, latestSnapshot, lastAttemptId, outcome as FetchSuccess, outcome.body);
-        }
-      } else {
-        await processFeedContent(ctx, target, lastAttemptId, outcome as FetchSuccess, outcome.body);
-      }
+      const processor = resolveContentProcessor(source);
+      await processor(ctx, {
+        target,
+        previousSnapshot: latestSnapshot,
+        checkAttemptId: lastAttemptId,
+        outcome: outcome as FetchSuccess,
+        body: outcome.body,
+      });
 
       // 8. 通知ファンアウトは pageContent/feed 内で change 挿入時に完了済み。
       // 9. Job 確定 + 次回スケジュール

@@ -17,14 +17,13 @@ import { diffText, extractCharsetFromContentType } from '../normalize';
 import type { FeedItem, FetchSuccess } from '../shared/contracts';
 import { sha256Hex } from '../shared/hash';
 import {
-  createDeliveryIfNew,
   createSnapshot,
   insertChangeIfNew,
-  listMatchingSubscriptions,
   type SnapshotRow,
   type TargetRow,
 } from '../db';
 import { bodyKey, normalizedKey, diffKey, putIfAbsent, truncateDiffPreview } from './r2';
+import { fanoutChange } from './notify';
 import type { CheckContext } from './types';
 
 /** Sitemap Direct ドキュメントの正規化フォーマット版。フォーマット変更時にインクリメント */
@@ -154,19 +153,9 @@ export async function processSitemapDirect(
 
   // inserted.inserted が false (dedupeKey 重複) でも、前回実行が Change 挿入後・
   // delivery/enqueue 前にクラッシュした可能性があるため配送は常に inserted.row に対して
-  // 行う (at-least-once 復旧、pageContent.ts と同じ理由)。changeIds は今回新規検出した
+  // 行う (at-least-once 復旧、fanoutChange の docstring 参照)。changeIds は今回新規検出した
   // Change のみを表すため inserted.inserted の場合のみ積む。
-  const subs = await listMatchingSubscriptions(ctx.db, {
-    siteId: ctx.site.id,
-    monitorId: ctx.monitor.id,
-    kind: 'updated',
-  });
-  for (const sub of subs) {
-    const delivery = await createDeliveryIfNew(ctx.db, inserted.row.id, sub.destinationId);
-    if (delivery.inserted) {
-      await ctx.env.NOTIFY_QUEUE.send({ deliveryId: delivery.row.id });
-    }
-  }
+  await fanoutChange(ctx, inserted.row);
   if (inserted.inserted) {
     ctx.changeIds.push(inserted.row.id);
   }
