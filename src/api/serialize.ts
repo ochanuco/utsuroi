@@ -18,6 +18,7 @@ import type {
 import type { AuditEventRow } from '../db';
 import { extractMaskedWebhookUrl, isEncryptedWebhookUrl } from '../db';
 import type { FetcherPolicy } from '../shared/contracts';
+import { describePipeline } from '../pipeline/contentProcessor';
 import { maskWebhookUrl } from './mask';
 
 export function serializeFetcherPolicy(policy: FetcherPolicy) {
@@ -70,6 +71,9 @@ export function serializeSource(row: SourceRow) {
           strip_query_params: row.config.stripQueryParams ?? null,
         }
       : null,
+    // Source が実行するパイプラインの Stage 列 (可視化用、ADR-0016)。実行時の processor 選択
+    // (resolveContentProcessor) と同じレシピ由来なので、実際の挙動とズレない。
+    pipeline: describePipeline(row),
     created_at: row.createdAt,
     updated_at: row.updatedAt,
   };
