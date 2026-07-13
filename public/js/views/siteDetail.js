@@ -402,6 +402,28 @@ function renderConfigSummary(source) {
 }
 
 /**
+ * Sourceカードのパイプライン図 (ADR-0016)。API が返す source.pipeline (Stage の {id,label} 列) を
+ * 「取得 → 抽出 → …」の横並びチップで表示する。pipeline が無い (古いレスポンス等) なら null を返す。
+ * Stage 列は resolveContentProcessor と同じレシピ由来 (describePipeline) なので、実際に走る処理と一致する。
+ */
+function renderPipelineDiagram(source) {
+  const stages = source.pipeline;
+  if (!Array.isArray(stages) || stages.length === 0) return null;
+  const children = [];
+  stages.forEach((stage, idx) => {
+    children.push(el('span', { class: 'pipeline-stage', text: stage.label }));
+    if (idx < stages.length - 1) {
+      children.push(el('span', { class: 'pipeline-arrow', text: '→', attrs: { 'aria-hidden': 'true' } }));
+    }
+  });
+  return el(
+    'div',
+    { class: 'source-pipeline', attrs: { 'aria-label': `パイプライン: ${stages.map((s) => s.label).join(' → ')}` } },
+    children
+  );
+}
+
+/**
  * page/sitemap系 Sourceの「設定を編集」トグルボタン + インライン編集フォーム (PATCH
  * /api/sources/:id, ADR-0013で追加済みのconfig限定更新APIの入口)。モード自体 (page:
  * 本文差分↔新着検知 / sitemap系: 一覧差分↔新着検知) の切り替えは提供しない (現在値を維持した
@@ -614,6 +636,9 @@ function renderSourceCard(source, monitorsForSource, monitorsFetchFailed, onSour
 
   const configSummary = renderConfigSummary(source);
   if (configSummary) card.appendChild(configSummary);
+
+  const pipelineDiagram = renderPipelineDiagram(source);
+  if (pipelineDiagram) card.appendChild(pipelineDiagram);
 
   // 設定編集はpage Source全般と、sitemap系のうちtraverseモードのみ (ADR-0015)。sitemap系の
   // directモードはサマリ表示のみで編集フォームは出さない (一覧差分自体には編集可能な項目がない)。
