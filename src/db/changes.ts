@@ -90,6 +90,11 @@ export async function insertChangeIfNew(
   return { inserted: false, row: mapRow(existing) };
 }
 
+/** title enrich (ADR-0016 Enrich段) で取得した `<title>` を Change へ書き戻す */
+export async function updateChangeTitle(db: D1Database, changeId: string, title: string): Promise<void> {
+  await db.prepare(`UPDATE changes SET title = ? WHERE id = ?`).bind(title, changeId).run();
+}
+
 export async function getChange(db: D1Database, id: string): Promise<ChangeRow | null> {
   const row = await db.prepare(`SELECT * FROM changes WHERE id = ?`).bind(id).first();
   return row ? mapRow(row) : null;

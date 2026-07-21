@@ -45,5 +45,7 @@ export interface CheckContext {
   /** epoch ms */
   now: () => number;
   changeIds: string[];
+  /** チェック全体で共有する title enrich (enrichTitle.ts) のフェッチ消費数。省略時は未使用 (0扱い) */
+  titleFetchesUsed?: number;
 }
 
