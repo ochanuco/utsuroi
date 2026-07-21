@@ -27,13 +27,21 @@ describe('buildDiscordPayload', () => {
     expect((payload.embeds as unknown[]).length).toBe(1);
   });
 
-  it('includes siteName, title, targetUrl, detectedAt in the embed description', () => {
+  it('includes targetUrl and a JST-formatted detectedAt in the embed description, but not siteName (Site line removed)', () => {
     const change = makeChange();
     const payload = buildDiscordPayload(change) as { embeds: Array<{ description: string }> };
     const description = payload.embeds[0]!.description;
-    expect(description).toContain(change.siteName);
+    expect(description).not.toContain(change.siteName);
     expect(description).toContain(change.targetUrl);
-    expect(description).toContain(change.detectedAt);
+    expect(description).toContain('2026-07-10 21:00:00 JST');
+    expect(description).not.toContain(change.detectedAt);
+  });
+
+  it('falls back to the raw string when detectedAt is not a parseable ISO date', () => {
+    const payload = buildDiscordPayload(makeChange({ detectedAt: 'not-a-date' })) as {
+      embeds: Array<{ description: string }>;
+    };
+    expect(payload.embeds[0]!.description).toContain('not-a-date');
   });
 
   it('colors embeds differently per change kind', () => {

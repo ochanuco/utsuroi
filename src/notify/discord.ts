@@ -63,16 +63,31 @@ function truncateToLength(text: string, maxChars: number): string {
   return `${text.slice(0, maxChars - 1)}…`;
 }
 
+/** JST (UTC+9固定オフセット) の 'YYYY-MM-DD HH:MM:SS JST' 形式へ整形する */
+function formatJst(iso: string): string {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return iso;
+
+  const jst = new Date(ms + 9 * 60 * 60 * 1000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const year = jst.getUTCFullYear();
+  const month = pad(jst.getUTCMonth() + 1);
+  const day = pad(jst.getUTCDate());
+  const hours = pad(jst.getUTCHours());
+  const minutes = pad(jst.getUTCMinutes());
+  const seconds = pad(jst.getUTCSeconds());
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds} JST`;
+}
+
 /**
  * Discord Webhook Embed ペイロードを生成する。
  * content は使わず embeds のみを載せる。
  */
 export function buildDiscordPayload(change: ChangeSummary): object {
   const lines = [
-    `**Site**: ${change.siteName}`,
     `**種別**: ${KIND_LABEL[change.kind]}`,
     `**URL**: ${change.targetUrl}`,
-    `**検出日時**: ${change.detectedAt}`,
+    `**検出日時**: ${formatJst(change.detectedAt)}`,
   ];
 
   if (change.diffPreview) {
