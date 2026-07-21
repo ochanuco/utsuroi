@@ -242,4 +242,33 @@ describe('enrichDetectedChanges: budget (MAX_TITLE_FETCHES_PER_CHECK)', () => {
     expect(fetchedUrls.length).toBe(MAX_TITLE_FETCHES_PER_CHECK);
     expect(ctx.titleFetchesUsed).toBe(MAX_TITLE_FETCHES_PER_CHECK);
   });
+
+  it('honors a pre-seeded titleFetchesUsed (e.g. carried over from an earlier processFeedItems call in the same check), limiting fetches to the remaining budget', async () => {
+    const { monitor, source, site, fetcherPolicy } = await setup();
+    const fetchedUrls: string[] = [];
+    const stub = routedFetch({
+      [ROBOTS_ALLOW[0]]: ROBOTS_ALLOW[1],
+    });
+    const trackingStub = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (!url.includes('robots.txt') && !url.includes('dns-query')) fetchedUrls.push(url);
+      return stub(input, init);
+    }) as typeof fetch;
+
+    const preSeeded = 3;
+    const remainingBudget = MAX_TITLE_FETCHES_PER_CHECK - preSeeded;
+    const total = remainingBudget + 2; // more candidates than the remaining budget allows
+    const detectedList: DetectedChange[] = [];
+    for (let i = 0; i < total; i++) {
+      detectedList.push(await makeDetected(monitor.id, { targetUrl: `https://example.com/preseed-budget-${i}` }));
+    }
+
+    const ctx = buildCtx(monitor, source, site, fetcherPolicy, trackingStub);
+    ctx.titleFetchesUsed = preSeeded;
+
+    await enrichDetectedChanges(ctx, detectedList);
+
+    expect(fetchedUrls.length).toBe(remainingBudget);
+    expect(ctx.titleFetchesUsed).toBe(MAX_TITLE_FETCHES_PER_CHECK);
+  });
 });

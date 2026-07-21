@@ -37,11 +37,21 @@ describe('buildDiscordPayload', () => {
     expect(description).not.toContain(change.detectedAt);
   });
 
-  it('falls back to the raw string when detectedAt is not a parseable ISO date', () => {
+  it('falls back to the raw string in the description and omits embed.timestamp when detectedAt is not a parseable ISO date', () => {
     const payload = buildDiscordPayload(makeChange({ detectedAt: 'not-a-date' })) as {
-      embeds: Array<{ description: string }>;
+      embeds: Array<{ description: string; timestamp?: string }>;
     };
     expect(payload.embeds[0]!.description).toContain('not-a-date');
+    expect(payload.embeds[0]!.timestamp).toBeUndefined();
+  });
+
+  it('normalizes embed.timestamp to an ISO string when detectedAt is parseable', () => {
+    const payload = buildDiscordPayload(makeChange()) as {
+      embeds: Array<{ timestamp?: string }>;
+    };
+    const timestamp = payload.embeds[0]!.timestamp;
+    expect(timestamp).toBe('2026-07-10T12:00:00.000Z');
+    expect(() => new Date(timestamp as string).toISOString()).not.toThrow();
   });
 
   it('colors embeds differently per change kind', () => {

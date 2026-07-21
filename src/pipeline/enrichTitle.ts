@@ -17,6 +17,8 @@ import { httpFetch, runFetchSequence } from '../fetch';
 import { checkUrlForSsrf, resolveAndCheck } from '../net';
 import { checkRobots } from '../robots';
 import { getRobotsMode, updateChangeTitle } from '../db';
+import { extractCharsetFromContentType } from '../normalize';
+import { decodeHtmlBestEffort } from '../normalize/charset';
 import { extractHtmlTitle } from '../normalize/extractTitle';
 import { createD1RobotsCache } from './robotsCache';
 import type { DetectedChange } from './notify';
@@ -78,7 +80,7 @@ async function fetchTitleForUrl(ctx: CheckContext, url: string): Promise<{ title
   if (outcome.status !== 200 || !outcome.body) return { title: null, skipReason: `non-200 or empty body (status ${outcome.status})` };
   if (!isHtmlContentType(outcome.contentType)) return { title: null, skipReason: `non-html content-type (${outcome.contentType ?? 'null'})` };
 
-  const html = new TextDecoder('utf-8', { fatal: false, ignoreBOM: false }).decode(outcome.body);
+  const html = decodeHtmlBestEffort(outcome.body, extractCharsetFromContentType(outcome.contentType));
   const title = await extractHtmlTitle(html);
   if (title === null) return { title: null, skipReason: 'no title found' };
   return { title, skipReason: null };

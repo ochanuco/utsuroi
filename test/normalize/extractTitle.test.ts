@@ -35,4 +35,17 @@ describe('extractHtmlTitle', () => {
     const html = '<html><head><title>First Title</title><title>Second Title</title></head></html>';
     expect(await extractHtmlTitle(html)).toBe('First Title');
   });
+
+  it('drops a trailing surrogate pair whole instead of splitting it at the 512-char boundary', async () => {
+    // 511 'x' + 1 emoji (surrogate pair, 2 UTF-16 code units) = 513 code units total.
+    // A naive slice(0, 512) would land exactly on the emoji's high surrogate half.
+    const longTitle = `${'x'.repeat(511)}😀`;
+    const html = `<html><head><title>${longTitle}</title></head></html>`;
+    const result = await extractHtmlTitle(html);
+    expect(result).not.toBeNull();
+    expect(result!.length).toBeLessThanOrEqual(512);
+    const lastCode = result!.charCodeAt(result!.length - 1);
+    expect(lastCode < 0xd800 || lastCode > 0xdbff).toBe(true); // no dangling high surrogate
+    expect(result).toBe('x'.repeat(511)); // the whole emoji was dropped, not split
+  });
 });

@@ -80,6 +80,16 @@ function formatJst(iso: string): string {
 }
 
 /**
+ * embed.timestamp 用に ISO 文字列へ正規化する。Discord は timestamp が不正な ISO 文字列だと
+ * ペイロード全体を 400 で拒否するため、パース不能なら null を返し呼び出し側でキー自体を省く。
+ */
+function normalizeEmbedTimestamp(iso: string): string | null {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return null;
+  return new Date(ms).toISOString();
+}
+
+/**
  * Discord Webhook Embed ペイロードを生成する。
  * content は使わず embeds のみを載せる。
  */
@@ -101,8 +111,12 @@ export function buildDiscordPayload(change: ChangeSummary): object {
     title: truncateToLength(change.title ?? change.siteName, EMBED_TITLE_MAX),
     color: KIND_COLOR[change.kind],
     description,
-    timestamp: change.detectedAt,
   };
+
+  const normalizedTimestamp = normalizeEmbedTimestamp(change.detectedAt);
+  if (normalizedTimestamp !== null) {
+    embed.timestamp = normalizedTimestamp;
+  }
 
   return { embeds: [embed] };
 }
