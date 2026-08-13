@@ -139,7 +139,10 @@ export async function checkRobots(
   if (!entry) {
     const nowIso = new Date(now()).toISOString();
     entry = await fetchRobots(robotsUrl, fetchImpl, userAgent, nowIso, timeoutMs);
-    if (opts.cache) {
+    // 取得不能 (5xx/network error) はキャッシュしない (ADR-0017)。障害を TTL 分固定すると
+    // 「連続 N 回 unavailable なら停止」の判定が実際の再取得を伴わずに進んでしまい、
+    // また復旧後も最大 TTL のあいだ disallow を返し続けてしまうため。
+    if (opts.cache && !entry.unavailable) {
       await opts.cache.put(origin, entry);
     }
   }

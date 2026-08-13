@@ -1,5 +1,6 @@
 export { parseRobotsTxt, normalizePercentEncoding } from './parser';
 export { evaluateRobots } from './evaluator';
+export { normalizeCanonicalOrigin } from './origin';
 export type { EvaluateRobotsResult } from './evaluator';
 export {
   checkRobots,
