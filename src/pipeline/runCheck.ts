@@ -10,6 +10,7 @@ import { checkRobots } from '../robots';
 import type { FetchSuccess, HostLimiter } from '../shared/contracts';
 import type { Env } from '../shared/env';
 import {
+  countConsecutiveUnavailableRobotsEvaluations,
   createCheckAttempt,
   createCheckJobIfNew,
   createRobotsEvaluation,
@@ -33,6 +34,12 @@ import { hostLimiterFactory } from '../do/hostObject';
 import type { CheckContext, CheckRunResult, RunMonitorCheckOptions } from './types';
 
 export type { CheckRunResult, RunMonitorCheckOptions } from './types';
+
+/**
+ * robots.txt が取得不能 (5xx/network error) で fail-closed になったとき、監視を恒久停止
+ * (Policy Stop) するまでに許す連続回数 (ADR-0017)。これ未満のあいだは通常スケジュールを保つ。
+ */
+export const ROBOTS_UNAVAILABLE_STOP_THRESHOLD = 3;
 
 /** ジッターの上限。interval の 10% または 60秒のいずれか小さい方 (設計判断: report 参照) */
 function jitterMs(intervalSeconds: number): number {
@@ -161,6 +168,15 @@ export async function runMonitorCheck(
   });
 
   if (decision.verdict === 'disallowed' && robotsMode === 'enforce') {
+    // 明示的な Disallow ルールによる禁止と、robots.txt を取得できなかっただけの
+    // fail-closed (5xx/network error) は区別する。後者は一過性であることが多いため、
+    // 連続 ROBOTS_UNAVAILABLE_STOP_THRESHOLD 回に達するまではこのチェックだけを failed に
+    // して通常スケジュールを維持し、監視を恒久停止させない (ADR-0017)。
+    const consecutiveUnavailable = decision.unavailable
+      ? await countConsecutiveUnavailableRobotsEvaluations(db, origin, ROBOTS_UNAVAILABLE_STOP_THRESHOLD)
+      : 0;
+    const transient = decision.unavailable && consecutiveUnavailable < ROBOTS_UNAVAILABLE_STOP_THRESHOLD;
+
     const fallbackFetcherId = policy.orderList[0]?.fetcherId ?? 'unknown';
     await createCheckAttempt(db, {
       checkJobId: job.id,
@@ -169,11 +185,20 @@ export async function runMonitorCheck(
       attemptIndex: 0,
       outcome: 'failure',
       failureClass: 'blocked_by_robots',
-      errorMessage: `blocked_by_robots: ${decision.robotsUrl} (${decision.matchedRule ?? 'unavailable'})`,
+      errorMessage: transient
+        ? `robots_unavailable: ${decision.robotsUrl} (consecutive ${consecutiveUnavailable}/${ROBOTS_UNAVAILABLE_STOP_THRESHOLD})`
+        : `blocked_by_robots: ${decision.robotsUrl} (${decision.matchedRule ?? 'unavailable'})`,
     });
+
+    if (transient) {
+      return finishJob(ctx, 'failed');
+    }
+
     await updateCheckJobStatus(db, job.id, 'policy_stopped', { finishedAt: nowIso() });
     await policyStopMonitor(db, monitorId, {
-      stopReason: `robots.txt disallow: ${decision.matchedRule ?? 'unavailable (5xx/network error)'}`,
+      stopReason: decision.matchedRule
+        ? `robots.txt disallow: ${decision.matchedRule}`
+        : `robots.txt unavailable (5xx/network error) ${ROBOTS_UNAVAILABLE_STOP_THRESHOLD} times in a row`,
       robotsEvaluationId: evaluation.id,
     });
     return { kind: 'policy_stopped', nextRunAt: null, changeIds: [] };

@@ -223,9 +223,10 @@ export function sitesRoutes() {
     await recordAuditEvent(c.env.DB, {
       actor: 'admin',
       action: body.mode === 'ignore' ? 'robots_override.enable' : 'robots_override.enforce',
-      subject: `site:${siteId}:${body.canonical_origin}`,
+      // 正規化後の値を記録する。監査ログと robots_policies の表記が食い違わないようにするため。
+      subject: `site:${siteId}:${policy.canonicalOrigin}`,
       reason: body.reason ?? null,
-      payload: { siteId, canonicalOrigin: body.canonical_origin, mode: body.mode },
+      payload: { siteId, canonicalOrigin: policy.canonicalOrigin, mode: body.mode },
     });
 
     return c.json(serializeRobotsPolicy(policy));
@@ -267,9 +268,14 @@ export function sitesRoutes() {
     await recordAuditEvent(c.env.DB, {
       actor: 'admin',
       action: 'robots_override.enforce',
-      subject: `site:${siteId}:${canonicalOrigin}`,
+      subject: `site:${siteId}:${policy.canonicalOrigin}`,
       reason: null,
-      payload: { siteId, canonicalOrigin, mode: 'enforce', revertedFrom: existing.mode },
+      payload: {
+        siteId,
+        canonicalOrigin: policy.canonicalOrigin,
+        mode: 'enforce',
+        revertedFrom: existing.mode,
+      },
     });
 
     return c.json(serializeRobotsPolicy(policy));

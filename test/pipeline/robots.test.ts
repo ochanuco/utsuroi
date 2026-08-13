@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it, vi } from 'vitest';
-import { runMonitorCheck } from '../../src/pipeline/runCheck';
+import { ROBOTS_UNAVAILABLE_STOP_THRESHOLD, runMonitorCheck } from '../../src/pipeline/runCheck';
 import type { Env } from '../../src/shared/env';
 import type { HostLimiter } from '../../src/shared/contracts';
 import {
@@ -64,6 +64,71 @@ describe('runMonitorCheck: robots.txt (SPEC §9, ADR-0008/0009)', () => {
 
     const snapshots = await listSnapshotsByMonitor(db(), monitor.id);
     expect(snapshots).toHaveLength(0);
+  });
+
+  it('transient unavailability (5xx) fails the check but keeps the monitor scheduled (ADR-0017)', async () => {
+    const { monitor } = await buildPipelineFixture({ sourceUrl: 'https://flaky.example.com/page' });
+    const fetchSpy = vi.fn();
+    const fetchStub = routedFetch({
+      'https://flaky.example.com/robots.txt': () => new Response('upstream error', { status: 503 }),
+      'https://flaky.example.com/page': (input, init) => {
+        fetchSpy(input, init);
+        return new Response('should not be fetched', { status: 200 });
+      },
+    });
+
+    const result = await runMonitorCheck(
+      fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+      monitor.id,
+      { fetch: fetchStub, hostLimiter: grantingLimiter() },
+    );
+
+    // fail-closed 自体は維持する (取得はしない) が、監視は止めない
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(result.kind).toBe('completed');
+    expect(result.nextRunAt).toBeTruthy();
+
+    const updatedMonitor = await getMonitor(db(), monitor.id);
+    expect(updatedMonitor?.status).toBe('active');
+    expect(updatedMonitor?.stopReason).toBeNull();
+    expect(updatedMonitor?.nextRunAt).toBeTruthy();
+
+    const jobs = await listCheckJobsByMonitor(db(), monitor.id);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.status).toBe('failed');
+
+    const attempts = await listCheckAttempts(db(), jobs[0]!.id);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.errorMessage).toContain('robots_unavailable');
+  });
+
+  it('policy-stops only after ROBOTS_UNAVAILABLE_STOP_THRESHOLD consecutive failures (ADR-0017)', async () => {
+    const { monitor } = await buildPipelineFixture({ sourceUrl: 'https://down.example.com/page' });
+    const fetchStub = routedFetch({
+      'https://down.example.com/robots.txt': () => new Response('upstream error', { status: 503 }),
+    });
+    const runOnce = (): ReturnType<typeof runMonitorCheck> =>
+      runMonitorCheck(
+        fakeEnv({ NOTIFY_QUEUE: { send: vi.fn() } as unknown as Env['NOTIFY_QUEUE'] }),
+        monitor.id,
+        { fetch: fetchStub, hostLimiter: grantingLimiter() },
+      );
+
+    for (let i = 1; i < ROBOTS_UNAVAILABLE_STOP_THRESHOLD; i += 1) {
+      const intermediate = await runOnce();
+      expect(intermediate.kind).toBe('completed');
+      expect((await getMonitor(db(), monitor.id))?.status).toBe('active');
+    }
+
+    const final = await runOnce();
+    expect(final.kind).toBe('policy_stopped');
+    expect(final.nextRunAt).toBeNull();
+
+    const stopped = await getMonitor(db(), monitor.id);
+    expect(stopped?.status).toBe('blocked_by_robots');
+    expect(stopped?.nextRunAt).toBeNull();
+    expect(stopped?.stopReason).toContain('unavailable');
+    expect(stopped?.robotsEvaluationId).toBeTruthy();
   });
 
   it('ignore mode (ADR-0009): a disallowed URL is recorded as robots_would_block but the check continues', async () => {

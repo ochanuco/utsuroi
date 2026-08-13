@@ -5,6 +5,7 @@ import type {
   RobotsPolicyRow,
   UpsertRobotsPolicyInput,
 } from './types';
+import { normalizeCanonicalOrigin } from '../robots/origin';
 import { fromBool, newId, nowIso, toBool } from './util';
 
 function mapPolicyRow(row: Record<string, unknown>): RobotsPolicyRow {
@@ -46,9 +47,11 @@ export async function upsertRobotsPolicy(
   input: UpsertRobotsPolicyInput
 ): Promise<RobotsPolicyRow> {
   const now = nowIso();
+  // 照合は完全一致なので、書き込み・読み出しの両方で同じ正規化を通す (ADR-0017)
+  const canonicalOrigin = normalizeCanonicalOrigin(input.canonicalOrigin);
   const existing = await db
     .prepare(`SELECT id, created_at FROM robots_policies WHERE site_id = ? AND canonical_origin = ?`)
-    .bind(input.siteId, input.canonicalOrigin)
+    .bind(input.siteId, canonicalOrigin)
     .first<{ id: string; created_at: string }>();
   const id = existing?.id ?? newId();
   const createdAt = existing?.created_at ?? now;
@@ -66,7 +69,7 @@ export async function upsertRobotsPolicy(
     .bind(
       id,
       input.siteId,
-      input.canonicalOrigin,
+      canonicalOrigin,
       input.mode,
       input.reason ?? null,
       input.updatedBy ?? null,
@@ -80,7 +83,7 @@ export async function upsertRobotsPolicy(
   // 生成前の値のまま返しており、実際に保存された値と食い違うバグがあった)。
   const persisted = await db
     .prepare(`SELECT * FROM robots_policies WHERE site_id = ? AND canonical_origin = ?`)
-    .bind(input.siteId, input.canonicalOrigin)
+    .bind(input.siteId, canonicalOrigin)
     .first();
   if (!persisted) throw new Error('upsertRobotsPolicy: row not found after upsert');
   return mapPolicyRow(persisted);
@@ -93,7 +96,7 @@ export async function getRobotsPolicy(
 ): Promise<RobotsPolicyRow | null> {
   const row = await db
     .prepare(`SELECT * FROM robots_policies WHERE site_id = ? AND canonical_origin = ?`)
-    .bind(siteId, canonicalOrigin)
+    .bind(siteId, normalizeCanonicalOrigin(canonicalOrigin))
     .first();
   return row ? mapPolicyRow(row) : null;
 }
@@ -155,6 +158,30 @@ export async function createRobotsEvaluation(
 export async function getRobotsEvaluation(db: D1Database, id: string): Promise<RobotsEvaluationRow | null> {
   const row = await db.prepare(`SELECT * FROM robots_evaluations WHERE id = ?`).bind(id).first();
   return row ? mapEvaluationRow(row) : null;
+}
+
+/**
+ * origin 単位で「直近から連続して unavailable だった評価」の件数を数える (ADR-0017)。
+ *
+ * 一過性の robots.txt 取得失敗で監視を恒久停止させないための判定に使う。`limit` 件だけ
+ * 見れば閾値判定には足りるので、それ以上は遡らない (戻り値は最大 `limit`)。
+ */
+export async function countConsecutiveUnavailableRobotsEvaluations(
+  db: D1Database,
+  origin: string,
+  limit: number
+): Promise<number> {
+  if (limit <= 0) return 0;
+  const { results } = await db
+    .prepare(`SELECT unavailable FROM robots_evaluations WHERE origin = ? ORDER BY checked_at DESC LIMIT ?`)
+    .bind(origin, limit)
+    .all<{ unavailable: number }>();
+  let count = 0;
+  for (const row of results) {
+    if (!toBool(row.unavailable)) break;
+    count += 1;
+  }
+  return count;
 }
 
 /** origin 単位の直近評価結果 (キャッシュ判定・再評価規則に使う) */
