@@ -13,6 +13,7 @@ import './js/views/monitorDetail.js';
 import './js/views/changeDetail.js';
 import './js/views/destinations.js';
 import './js/views/auditEvents.js';
+import './js/views/dryRun.js';
 
 const gateEl = document.getElementById('gate');
 const appEl = document.getElementById('app');

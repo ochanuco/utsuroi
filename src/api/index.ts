@@ -12,6 +12,7 @@ import { ApiError } from './errors';
 import { auditEventsRoutes } from './routes/auditEvents';
 import { changesRoutes } from './routes/changes';
 import { destinationsRoutes } from './routes/destinations';
+import { dryRunRoutes } from './routes/dryRun';
 import { fetchersRoutes } from './routes/fetchers';
 import { jobsRoutes } from './routes/jobs';
 import { monitorsRoutes } from './routes/monitors';
@@ -30,6 +31,11 @@ export interface CreateAppOptions {
    * 省略時は resolveAndCheck の既定 (DoH over fetch) を使う。
    */
   ssrfResolver?: DnsResolver;
+  /**
+   * DryRun (POST /api/dry-run) が robots.txt / 対象ページの取得に使う fetch。
+   * 省略時は globalThis.fetch。テストでは実ネットワークを使わないためスタブを注入する。
+   */
+  fetchImpl?: typeof fetch;
 }
 
 export function createApp(opts: CreateAppOptions = {}): Hono<{ Bindings: Env }> {
@@ -47,6 +53,7 @@ export function createApp(opts: CreateAppOptions = {}): Hono<{ Bindings: Env }> 
   app.route('/api/destinations', destinationsRoutes());
   app.route('/api/subscriptions', subscriptionsRoutes());
   app.route('/api/audit-events', auditEventsRoutes());
+  app.route('/api/dry-run', dryRunRoutes({ ssrfResolver: opts.ssrfResolver, fetchImpl: opts.fetchImpl }));
 
   app.onError((err, c) => {
     if (err instanceof ApiError) {
