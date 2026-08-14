@@ -92,6 +92,7 @@ export function buildTestApp(opts: Partial<CreateAppOptions> = {}) {
   const app = createApp({
     monitorControlFactory: opts.monitorControlFactory ?? fake.factory,
     ssrfResolver: opts.ssrfResolver ?? stubPublicResolver(),
+    fetchImpl: opts.fetchImpl,
   });
   return { app, fakeMonitorControl: fake.state };
 }

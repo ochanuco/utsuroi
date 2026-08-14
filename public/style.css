@@ -418,6 +418,13 @@ pre.code-block {
   padding: 12px 0;
 }
 
+/* Dry Run で取得した <title>。結果の主役なので少し大きく見せる */
+.dry-run-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  word-break: break-word;
+}
+
 /* --- Source + 監視状態 統合カード --- */
 .source-card {
   border: 1px solid var(--border);
