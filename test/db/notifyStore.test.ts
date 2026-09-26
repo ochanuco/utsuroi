@@ -4,9 +4,16 @@ import {
   createD1NotifyStore,
   createDeliveryIfNew,
   createDestination,
+  createMonitor,
+  createSite,
+  createSource,
   encryptWebhookUrl,
   getDelivery,
   insertChangeIfNew,
+  resolveTagLines,
+  setChangeTagsIfNull,
+  upsertTarget,
+  type SourceConfig,
 } from '../../src/db';
 import { buildFixture, db, FIXTURE_WEBHOOK_URL, TEST_WEBHOOK_ENC_KEY } from './helpers';
 
@@ -198,5 +205,130 @@ describe('createD1NotifyStore (implements src/shared/contracts.ts NotifyStore)',
     // これにより Discord への二重送信を防ぐ。
     const second = await store.getPendingDelivery(delivery.row.id);
     expect(second).toBeNull();
+  });
+});
+
+// labels機能 (ADR-0019): resolveTagLines のグループ化・ラベル解決ロジック単体テスト。
+describe('resolveTagLines', () => {
+  it('maps a tag to its labeled value', () => {
+    const lines = resolveTagLines(['area:kuzuha'], { tags: { 'area:kuzuha': 'くずは' } });
+    expect(lines).toEqual([{ heading: '分類', values: ['くずは'] }]);
+  });
+
+  it('falls back to the raw tag when no label is mapped', () => {
+    const lines = resolveTagLines(['area:kuzuha'], { tags: {} });
+    expect(lines).toEqual([{ heading: '分類', values: ['area:kuzuha'] }]);
+  });
+
+  it('ignores Object.prototype keys such as constructor', () => {
+    const lines = resolveTagLines(['constructor'], { groups: {}, tags: {} });
+    expect(lines).toEqual([{ heading: '分類', values: ['constructor'] }]);
+  });
+
+  it('falls back to 分類 when the group has no heading mapped', () => {
+    const lines = resolveTagLines(['area:kuzuha'], { groups: {}, tags: { 'area:kuzuha': 'くずは' } });
+    expect(lines[0]!.heading).toBe('分類');
+  });
+
+  it('uses the mapped group heading when present', () => {
+    const lines = resolveTagLines(['area:kuzuha'], { groups: { area: 'エリア' }, tags: { 'area:kuzuha': 'くずは' } });
+    expect(lines[0]!.heading).toBe('エリア');
+  });
+
+  it('orders groups by first appearance and preserves per-group value order', () => {
+    const lines = resolveTagLines(
+      ['topic:rent', 'area:kuzuha', 'area:central', 'topic:sale'],
+      {
+        groups: { area: 'エリア', topic: '話題' },
+        tags: {
+          'area:kuzuha': 'くずは',
+          'area:central': '市駅周辺',
+          'topic:rent': '賃貸',
+          'topic:sale': '売買',
+        },
+      },
+    );
+    expect(lines).toEqual([
+      { heading: '話題', values: ['賃貸', '売買'] },
+      { heading: 'エリア', values: ['くずは', '市駅周辺'] },
+    ]);
+  });
+
+  it('groups a tag with no colon under the empty-string group key', () => {
+    const lines = resolveTagLines(['unclassified'], undefined);
+    expect(lines).toEqual([{ heading: '分類', values: ['unclassified'] }]);
+  });
+
+  it('returns an empty array for null tags', () => {
+    expect(resolveTagLines(null, { tags: { x: 'y' } })).toEqual([]);
+  });
+
+  it('returns an empty array for an empty tags array', () => {
+    expect(resolveTagLines([], { tags: { x: 'y' } })).toEqual([]);
+  });
+});
+
+// labels機能 (ADR-0019): getPendingDelivery が Change.tags と Source.config.classify.labels から
+// ChangeSummary.tags / tagLines を組み立てることを検証する (DB統合)。
+describe('getPendingDelivery: tags / tagLines (labels機能)', () => {
+  it('populates tags and tagLines from the source classify.labels config', async () => {
+    const d = db();
+    const store = createD1NotifyStore(d, TEST_WEBHOOK_ENC_KEY);
+
+    const site = await createSite(d, { name: 'Labels Site' });
+    const classify: NonNullable<SourceConfig['classify']> = {
+      rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: 'x' } }],
+      labels: {
+        groups: { area: 'エリア' },
+        tags: { 'area:kuzuha': 'くずは', 'area:other': 'その他' },
+      },
+    };
+    const source = await createSource(d, {
+      siteId: site.id,
+      type: 'rss',
+      url: 'https://example.com/labels-feed.xml',
+      config: { classify },
+    });
+    const monitor = await createMonitor(d, { siteId: site.id, sourceId: source.id, intervalSeconds: 3600 });
+    const target = await upsertTarget(d, { monitorId: monitor.id, url: 'https://example.com/labels-feed.xml' });
+    const encryptedWebhookUrl = await encryptWebhookUrl(
+      FIXTURE_WEBHOOK_URL,
+      'discord.com/***test',
+      TEST_WEBHOOK_ENC_KEY,
+    );
+    const destination = await createDestination(d, { name: 'Labels Discord', webhookUrl: encryptedWebhookUrl });
+
+    const change = await insertChangeIfNew(d, {
+      monitorId: monitor.id,
+      targetId: target.id,
+      targetUrl: target.url,
+      kind: 'new',
+      dedupeKey: 'sha256:notify-labels-1',
+    });
+    await setChangeTagsIfNull(d, change.row.id, ['area:kuzuha', 'area:other']);
+    const delivery = await createDeliveryIfNew(d, change.row.id, destination.id);
+
+    const pending = await store.getPendingDelivery(delivery.row.id);
+    expect(pending?.change.tags).toEqual(['area:kuzuha', 'area:other']);
+    expect(pending?.change.tagLines).toEqual([{ heading: 'エリア', values: ['くずは', 'その他'] }]);
+  });
+
+  it('has no tag lines when the source has no classify config', async () => {
+    const d = db();
+    const store = createD1NotifyStore(d, TEST_WEBHOOK_ENC_KEY);
+    const { monitor, target, destination } = await buildFixture(d);
+
+    const change = await insertChangeIfNew(d, {
+      monitorId: monitor.id,
+      targetId: target.id,
+      targetUrl: target.url,
+      kind: 'updated',
+      dedupeKey: 'sha256:notify-no-classify',
+    });
+    const delivery = await createDeliveryIfNew(d, change.row.id, destination.id);
+
+    const pending = await store.getPendingDelivery(delivery.row.id);
+    expect(pending?.change.tags).toBeNull();
+    expect(pending?.change.tagLines).toEqual([]);
   });
 });

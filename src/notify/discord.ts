@@ -94,11 +94,21 @@ function normalizeEmbedTimestamp(iso: string): string | null {
  * content は使わず embeds のみを載せる。
  */
 export function buildDiscordPayload(change: ChangeSummary): object {
-  const lines = [
-    `**種別**: ${KIND_LABEL[change.kind]}`,
-    `**URL**: ${change.targetUrl}`,
-    `**検出日時**: ${formatJst(change.detectedAt)}`,
-  ];
+  const lines: string[] = [];
+
+  // 'new' は Source が新着として検知した Change の既定状態であり自明なため、種別行は
+  // 'updated' / 'removed' のときだけ載せる (labels機能: タグ行を主役に見せるための整理)。
+  if (change.kind !== 'new') {
+    lines.push(`**種別**: ${KIND_LABEL[change.kind]}`);
+  }
+
+  // labels機能 (ADR-0019): classify.labels で解決済みのグループ別タグ行。解決は
+  // src/db/notifyStore.ts が行うため、ここでは受け取った tagLines をそのまま整形するだけ。
+  for (const tagLine of change.tagLines ?? []) {
+    lines.push(`**${tagLine.heading}**: ${tagLine.values.join('、')}`);
+  }
+
+  lines.push(`**URL**: ${change.targetUrl}`, `**検出日時**: ${formatJst(change.detectedAt)}`);
 
   if (change.diffPreview) {
     const truncatedDiff = truncateDiffPreview(change.diffPreview, DIFF_PREVIEW_MAX_CHARS);

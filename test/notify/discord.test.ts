@@ -91,6 +91,60 @@ describe('buildDiscordPayload', () => {
     expect(payload.embeds[0]!.title.length).toBeLessThanOrEqual(256);
     expect(payload.embeds[0]!.title).not.toBe(longTitle);
   });
+
+  // labels機能 (ADR-0019): 'new' は種別行を省き、それ以外は残す。タグ行は種別行の直後・URL行の前に載る。
+  describe('種別行 / タグ行 (labels機能)', () => {
+    it('omits the 種別 line for a "new" change', () => {
+      const payload = buildDiscordPayload(makeChange({ kind: 'new' })) as {
+        embeds: Array<{ description: string }>;
+      };
+      expect(payload.embeds[0]!.description).not.toContain('種別');
+    });
+
+    it('keeps the 種別 line for an "updated" change', () => {
+      const payload = buildDiscordPayload(makeChange({ kind: 'updated' })) as {
+        embeds: Array<{ description: string }>;
+      };
+      expect(payload.embeds[0]!.description).toContain('**種別**: 更新検出');
+    });
+
+    it('keeps the 種別 line for a "removed" change', () => {
+      const payload = buildDiscordPayload(makeChange({ kind: 'removed' })) as {
+        embeds: Array<{ description: string }>;
+      };
+      expect(payload.embeds[0]!.description).toContain('**種別**: 削除検出');
+    });
+
+    it('omits tag lines when tagLines is empty/undefined', () => {
+      const payload = buildDiscordPayload(makeChange({ tagLines: [] })) as {
+        embeds: Array<{ description: string }>;
+      };
+      const description = payload.embeds[0]!.description;
+      expect(description).not.toContain('分類');
+    });
+
+    it('renders one line per tag group, joining values with 、, placed before URL', () => {
+      const payload = buildDiscordPayload(
+        makeChange({
+          kind: 'updated',
+          tagLines: [
+            { heading: 'エリア', values: ['くずは', '市駅周辺'] },
+            { heading: '話題', values: ['賃貸'] },
+          ],
+        }),
+      ) as { embeds: Array<{ description: string }> };
+      const description = payload.embeds[0]!.description;
+      expect(description).toContain('**エリア**: くずは、市駅周辺');
+      expect(description).toContain('**話題**: 賃貸');
+
+      const kindIdx = description.indexOf('**種別**');
+      const areaIdx = description.indexOf('**エリア**');
+      const urlIdx = description.indexOf('**URL**');
+      expect(kindIdx).toBeGreaterThanOrEqual(0);
+      expect(kindIdx).toBeLessThan(areaIdx);
+      expect(areaIdx).toBeLessThan(urlIdx);
+    });
+  });
 });
 
 describe('maskWebhookUrl', () => {
