@@ -227,4 +227,50 @@ describe('sendToDiscord', () => {
       expect(result.message).not.toContain('127.0.0.1');
     }
   });
+
+  // ADR-0019: Destination.thread_id が設定されている場合、配送 URL に ?thread_id= を付ける。
+  describe('thread_id (ADR-0019)', () => {
+    it('appends thread_id as a query parameter when set', async () => {
+      let requestedUrl: string | null = null;
+      const fetchStub = async (input: RequestInfo | URL) => {
+        requestedUrl = typeof input === 'string' ? input : input.toString();
+        return new Response(null, { status: 204 });
+      };
+
+      const result = await sendToDiscord(WEBHOOK_URL, {}, { fetch: fetchStub, threadId: '123456789012345678' });
+
+      expect(result.ok).toBe(true);
+      expect(requestedUrl).toBe(`${WEBHOOK_URL}?thread_id=123456789012345678`);
+    });
+
+    it('preserves an existing query string when adding thread_id', async () => {
+      let requestedUrl: string | null = null;
+      const fetchStub = async (input: RequestInfo | URL) => {
+        requestedUrl = typeof input === 'string' ? input : input.toString();
+        return new Response(null, { status: 204 });
+      };
+
+      const result = await sendToDiscord(`${WEBHOOK_URL}?wait=true`, {}, {
+        fetch: fetchStub,
+        threadId: '123456789012345678',
+      });
+
+      expect(result.ok).toBe(true);
+      expect(requestedUrl).toContain('wait=true');
+      expect(requestedUrl).toContain('thread_id=123456789012345678');
+    });
+
+    it('does not add a thread_id query parameter when threadId is null/omitted', async () => {
+      let requestedUrl: string | null = null;
+      const fetchStub = async (input: RequestInfo | URL) => {
+        requestedUrl = typeof input === 'string' ? input : input.toString();
+        return new Response(null, { status: 204 });
+      };
+
+      await sendToDiscord(WEBHOOK_URL, {}, { fetch: fetchStub, threadId: null });
+
+      expect(requestedUrl).toBe(WEBHOOK_URL);
+      expect(requestedUrl).not.toContain('thread_id');
+    });
+  });
 });

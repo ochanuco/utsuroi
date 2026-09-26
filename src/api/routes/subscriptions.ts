@@ -10,6 +10,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Env } from '../../shared/env';
 import { createSubscription, getDestination, getMonitor, getSite, listSubscriptionsByDestination } from '../../db';
+import { TAG_PATTERN } from '../../shared/types';
 import { badRequest, notFound } from '../errors';
 import { paginate, parsePagination, parseWith, readJsonBody } from '../http';
 import { deleteSubscriptionById, getSubscriptionById } from '../rawQueries';
@@ -21,7 +22,8 @@ const createSubscriptionSchema = z.object({
   destination_id: z.string().min(1),
   site_id: z.string().min(1).nullable().optional(),
   monitor_id: z.string().min(1).nullable().optional(),
-  tag: z.string().nullable().optional(),
+  // ADR-0019: Change.tags との一致条件に使う形式。null は従来どおりワイルドカード。
+  tag: z.string().regex(TAG_PATTERN, 'tag must match ^[a-z0-9][a-z0-9:_-]{0,63}$').nullable().optional(),
   kind: changeKindSchema.nullable().optional(),
   kinds: z.array(changeKindSchema).optional(),
 });

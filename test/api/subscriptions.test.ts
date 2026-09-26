@@ -109,4 +109,59 @@ describe('POST/GET/DELETE /api/subscriptions', () => {
     const body = await res.json() as any;
     expect(body.error.code).toBe('destination_archived');
   });
+
+  // ADR-0019: Change.tags との一致条件に使うため、tag は形式を検証する (null は従来どおり許可)。
+  it('accepts a well-formed tag', async () => {
+    const { app } = buildTestApp();
+    const destination = await makeDestination();
+
+    const res = await app.request(
+      '/api/subscriptions',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ destination_id: destination.id, tag: 'area:kuzuha' }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.tag).toBe('area:kuzuha');
+  });
+
+  it('accepts a null tag as a wildcard', async () => {
+    const { app } = buildTestApp();
+    const destination = await makeDestination();
+
+    const res = await app.request(
+      '/api/subscriptions',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ destination_id: destination.id, tag: null }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.tag).toBeNull();
+  });
+
+  it('rejects a malformed tag (400)', async () => {
+    const { app } = buildTestApp();
+    const destination = await makeDestination();
+
+    for (const tag of ['Area:Kuzuha', 'has space', '', 'a'.repeat(65)]) {
+      const res = await app.request(
+        '/api/subscriptions',
+        {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({ destination_id: destination.id, tag }),
+        },
+        testEnv()
+      );
+      expect(res.status, `expected 400 for tag ${JSON.stringify(tag)}`).toBe(400);
+    }
+  });
 });

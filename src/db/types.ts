@@ -75,6 +75,27 @@ export interface SourceConfig {
      */
     fields?: Array<{ name: string; selector?: string; label?: string }>;
   };
+  /**
+   * 決定論的 Classify 段の設定 (ADR-0019)。rss/atom は常に、page は pageMode==='extract' のときのみ、
+   * sitemap/sitemap-index は sitemapMode==='traverse' のときのみ意味を持つ (src/api/routes/sources.ts
+   * が type/mode別に検証・拒否する)。未設定の Source では Classify 段は何もせず tags は常に NULL。
+   */
+  classify?: {
+    /** 1..20件。上から順に評価し、一致した全ルールの tag を (重複除去して) 付与する */
+    rules: Array<{
+      tag: string;
+      match: {
+        /** 'title' | 'url' | 'summary' は Item 自身のプロパティ、それ以外は extract.fields[].name */
+        field: string;
+        /** JS RegExp source (1..200文字) */
+        pattern: string;
+        /** 'i' のみ許可 */
+        flags?: string;
+      };
+    }>;
+    /** どのルールにも一致しなかった Change に付けるタグ */
+    defaultTag?: string;
+  };
 }
 
 export interface SourceRow {
@@ -300,6 +321,12 @@ export interface ChangeRow {
   diffR2Key: string | null;
   diffPreview: string | null;
   title: string | null;
+  /**
+   * Classify段 (ADR-0019) が付けたタグの配列、または NULL。
+   * NULL は「未分類」(Source に classify 未設定、または Classify がまだ走っていない)、
+   * [] は「分類済みでタグ0件」を意味する。listMatchingSubscriptions のタグ一致条件に使う。
+   */
+  tags: string[] | null;
   detectedAt: string;
   createdAt: string;
 }
@@ -338,6 +365,8 @@ export interface DestinationRow {
   enabled: boolean;
   /** アーカイブ (soft delete, ADR-0012) 日時。未アーカイブなら null */
   archivedAt: string | null;
+  /** 配送先 Discord スレッドの ID (ADR-0019)。設定時、送信 URL に `?thread_id=` を付ける。未設定は null */
+  threadId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -347,6 +376,7 @@ export interface CreateDestinationInput {
   name: string;
   webhookUrl: string;
   enabled?: boolean;
+  threadId?: string | null;
 }
 
 export interface SubscriptionRow {

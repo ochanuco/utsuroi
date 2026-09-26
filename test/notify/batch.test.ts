@@ -249,4 +249,21 @@ describe('processNotifyBatch', () => {
     expect(msgThrows.retryCalls.length).toBe(1);
     expect(msgThrows.ackCount).toBe(0);
   });
+
+  // ADR-0019: PendingDelivery.threadId が sendToDiscord まで届き、送信 URL に反映される。
+  it('threads the destination thread_id through to the Discord request URL', async () => {
+    const store = new FakeNotifyStore();
+    store.seed(makeDelivery({ threadId: '123456789012345678' }));
+    const message = makeMessage({ deliveryId: 'delivery-1' });
+    let requestedUrl: string | null = null;
+    const fetchStub = async (input: RequestInfo | URL) => {
+      requestedUrl = typeof input === 'string' ? input : input.toString();
+      return new Response(null, { status: 204 });
+    };
+
+    await processNotifyBatch(batchOf(message), store, { fetch: fetchStub });
+
+    expect(requestedUrl).toBe(`${WEBHOOK_URL}?thread_id=123456789012345678`);
+    expect(store.statusOf('delivery-1')).toBe('delivered');
+  });
 });

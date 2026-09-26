@@ -17,6 +17,7 @@ interface PendingDeliveryQueryRow {
   attempt_count: number;
   webhook_url: string;
   destination_archived_at: string | null;
+  destination_thread_id: string | null;
   change_id: string;
   kind: ChangeKind;
   source_type: SourceType;
@@ -79,6 +80,7 @@ export function createD1NotifyStore(db: D1Database, webhookEncKey: string | unde
              d.attempt_count AS attempt_count,
              dest.webhook_url AS webhook_url,
              dest.archived_at AS destination_archived_at,
+             dest.thread_id AS destination_thread_id,
              c.id AS change_id,
              c.kind AS kind,
              c.monitor_id AS monitor_id,
@@ -130,6 +132,7 @@ export function createD1NotifyStore(db: D1Database, webhookEncKey: string | unde
         change,
         webhookUrl,
         attemptCount: row.attempt_count,
+        threadId: row.destination_thread_id ?? null,
       };
     },
 

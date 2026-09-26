@@ -310,3 +310,185 @@ describe('POST /api/destinations/:id/archive (ADR-0012: soft delete)', () => {
     expect(res.status).toBe(404);
   });
 });
+
+// ADR-0019: Discord スレッドへの投稿先 (thread_id)。
+describe('POST/PATCH /api/destinations: thread_id (ADR-0019)', () => {
+  it('creates a destination with a thread_id and serializes it back', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request(
+      '/api/destinations',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          name: uniqueName('Threaded'),
+          webhook_url: 'https://discord.com/api/webhooks/1/threaded1234',
+          thread_id: '123456789012345678',
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.thread_id).toBe('123456789012345678');
+  });
+
+  it('rejects a malformed thread_id on create (400)', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request(
+      '/api/destinations',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          name: uniqueName('Bad Thread'),
+          webhook_url: 'https://discord.com/api/webhooks/1/badthread',
+          thread_id: 'not-a-snowflake',
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('defaults thread_id to null when omitted', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request(
+      '/api/destinations',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          name: uniqueName('No Thread'),
+          webhook_url: 'https://discord.com/api/webhooks/1/nothread1234',
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.thread_id).toBeNull();
+  });
+
+  it('updates thread_id via PATCH and records an audit event (destination.update)', async () => {
+    const { app } = buildTestApp();
+    const created = await (
+      await app.request(
+        '/api/destinations',
+        {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({
+            name: uniqueName('Patch Thread'),
+            webhook_url: 'https://discord.com/api/webhooks/1/patchthread123',
+          }),
+        },
+        testEnv()
+      )
+    ).json() as any;
+
+    const res = await app.request(
+      `/api/destinations/${created.id}`,
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ thread_id: '987654321098765432' }) },
+      testEnv()
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.thread_id).toBe('987654321098765432');
+
+    const events = await listAuditEventsBySubject(db(), created.id);
+    expect(events.some((e) => e.action === 'destination.update')).toBe(true);
+  });
+
+  it('clears thread_id via PATCH with null', async () => {
+    const { app } = buildTestApp();
+    const created = await (
+      await app.request(
+        '/api/destinations',
+        {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({
+            name: uniqueName('Clear Thread'),
+            webhook_url: 'https://discord.com/api/webhooks/1/clearthread123',
+            thread_id: '111111111111111111',
+          }),
+        },
+        testEnv()
+      )
+    ).json() as any;
+
+    const res = await app.request(
+      `/api/destinations/${created.id}`,
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ thread_id: null }) },
+      testEnv()
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.thread_id).toBeNull();
+  });
+
+  it('returns 404 for PATCH on an unknown destination', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request(
+      '/api/destinations/nope',
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ thread_id: '123456789012345678' }) },
+      testEnv()
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects PATCH on an archived destination (400 destination_archived)', async () => {
+    const { app } = buildTestApp();
+    const created = await (
+      await app.request(
+        '/api/destinations',
+        {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({
+            name: uniqueName('Archived Thread'),
+            webhook_url: 'https://discord.com/api/webhooks/1/archivedthread12',
+          }),
+        },
+        testEnv()
+      )
+    ).json() as any;
+
+    await app.request(`/api/destinations/${created.id}/archive`, { method: 'POST', headers: authHeaders() }, testEnv());
+
+    const res = await app.request(
+      `/api/destinations/${created.id}`,
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ thread_id: '123456789012345678' }) },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe('destination_archived');
+  });
+
+  it('rejects a malformed thread_id on PATCH (400)', async () => {
+    const { app } = buildTestApp();
+    const created = await (
+      await app.request(
+        '/api/destinations',
+        {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({
+            name: uniqueName('Patch Bad Thread'),
+            webhook_url: 'https://discord.com/api/webhooks/1/patchbadthread',
+          }),
+        },
+        testEnv()
+      )
+    ).json() as any;
+
+    const res = await app.request(
+      `/api/destinations/${created.id}`,
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ thread_id: 'nope' }) },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+  });
+});

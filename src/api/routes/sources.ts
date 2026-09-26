@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { Env } from '../../shared/env';
 import type { DnsResolver } from '../../net';
 import { checkUrlForSsrf, resolveAndCheck } from '../../net';
+import { TAG_PATTERN } from '../../shared/types';
 import {
   countMonitorsBySource,
   countSourcesBySite,
@@ -49,6 +50,33 @@ const extractConfigSchema = z
   })
   .strict();
 
+// ADR-0019: 決定論的 Classify 段の設定。pattern の compile 可能性は形状の検証だけでは
+// 表現できないため (invalid_classify という専用エラーコードにしたい)、extract.item_selector と
+// 同様にルートハンドラ側 (validateSourceConfig) で追加検証する。
+const classifyMatchSchema = z
+  .object({
+    // 'title' | 'url' | 'summary' (Item自身) または extract.fields[].name (任意の名前) のいずれか。
+    field: z.string().min(1).max(50),
+    pattern: z.string().min(1).max(200),
+    // 'i' 以外のフラグ (m/s/g等) は許可しない (ReDoS対策・挙動の予測可能性のため最小限に絞る)。
+    flags: z.literal('i').optional(),
+  })
+  .strict();
+
+const classifyRuleSchema = z
+  .object({
+    tag: z.string().regex(TAG_PATTERN, 'tag must match ^[a-z0-9][a-z0-9:_-]{0,63}$'),
+    match: classifyMatchSchema,
+  })
+  .strict();
+
+const classifyConfigSchema = z
+  .object({
+    rules: z.array(classifyRuleSchema).min(1).max(20),
+    default_tag: z.string().regex(TAG_PATTERN, 'default_tag must match ^[a-z0-9][a-z0-9:_-]{0,63}$').optional(),
+  })
+  .strict();
+
 // config の中身の形状のみを定義する (optional() は create/update それぞれの呼び出し側で付与する:
 // create は config キー自体を省略可能、update (PATCH) は config キーを必須にしたいため)。
 const sourceConfigShape = z
@@ -65,6 +93,9 @@ const sourceConfigShape = z
     ignore_selectors: z.array(z.string().min(1)).optional(),
     include_selectors: z.array(z.string().min(1)).optional(),
     strip_query_params: z.array(z.string().min(1)).optional(),
+    // rss/atom は常に、page は page_mode==='extract' のときのみ、sitemap/sitemap-index は
+    // sitemap_mode==='traverse' のときのみ適用可能 (ADR-0019, validateSourceConfig 参照)。
+    classify: classifyConfigSchema.optional(),
   })
   .strict();
 
@@ -143,6 +174,19 @@ function toSourceConfig(input: SourceConfigInput | undefined): SourceConfig | un
   if (input.ignore_selectors !== undefined) config.ignoreSelectors = input.ignore_selectors;
   if (input.include_selectors !== undefined) config.includeSelectors = input.include_selectors;
   if (input.strip_query_params !== undefined) config.stripQueryParams = input.strip_query_params;
+  if (input.classify !== undefined) {
+    config.classify = {
+      rules: input.classify.rules.map((rule) => ({
+        tag: rule.tag,
+        match: {
+          field: rule.match.field,
+          pattern: rule.match.pattern,
+          ...(rule.match.flags !== undefined ? { flags: rule.match.flags } : {}),
+        },
+      })),
+      ...(input.classify.default_tag !== undefined ? { defaultTag: input.classify.default_tag } : {}),
+    };
+  }
   return config;
 }
 
@@ -153,24 +197,43 @@ function toSourceConfig(input: SourceConfigInput | undefined): SourceConfig | un
 function validateSourceConfig(type: SourceRow['type'], config: SourceConfigInput | undefined): void {
   if (config) {
     if (type === 'sitemap' || type === 'sitemap-index') {
-      const badKeys = findConfigNotApplicableKeys(config, SITEMAP_ONLY_CONFIG_KEYS);
+      const badKeys = findConfigNotApplicableKeys(config, [...SITEMAP_ONLY_CONFIG_KEYS, 'classify']);
       if (badKeys.length > 0) {
         throw badRequest(
           'config_not_applicable',
           `config key(s) not applicable to ${type} sources: ${badKeys.join(', ')}`,
         );
       }
+      // ADR-0019: classify は sitemapMode==='traverse' のときのみ意味を持つ (direct モードは
+      // 実URLの差分を direct 集合の追加/削除としてしか検知しないため、item データを運べない)。
+      if (config.classify && config.sitemap_mode !== 'traverse') {
+        throw badRequest(
+          'config_not_applicable',
+          'classify requires sitemap_mode "traverse"',
+        );
+      }
     } else if (type === 'page') {
-      const badKeys = findConfigNotApplicableKeys(config, PAGE_ONLY_CONFIG_KEYS);
+      const badKeys = findConfigNotApplicableKeys(config, [...PAGE_ONLY_CONFIG_KEYS, 'classify']);
       if (badKeys.length > 0) {
         throw badRequest(
           'config_not_applicable',
           `config key(s) not applicable to page sources: ${badKeys.join(', ')}`,
         );
       }
+      // ADR-0019: classify は page_mode==='extract' のときのみ意味を持つ (本文差分モードは
+      // Item を持たず Classify の入力 (title/url/summary/fields) を作れない)。
+      if (config.classify && config.page_mode !== 'extract') {
+        throw badRequest('config_not_applicable', 'classify requires page_mode "extract"');
+      }
     } else {
-      // rss/atom は config を一切受け付けない (従来どおり)。
-      throw badRequest('config_not_applicable', `config is not applicable to ${type} sources`);
+      // rss/atom は classify のみ受け付ける (ADR-0019)。それ以外の (page/sitemap系) キーは従来どおり拒否。
+      const badKeys = findConfigNotApplicableKeys(config, ['classify']);
+      if (badKeys.length > 0) {
+        throw badRequest(
+          'config_not_applicable',
+          `config key(s) not applicable to ${type} sources: ${badKeys.join(', ')}`,
+        );
+      }
     }
   }
 
@@ -206,6 +269,22 @@ function validateSourceConfig(type: SourceRow['type'], config: SourceConfigInput
         throw badRequest(
           'invalid_selector',
           `extract.fields[].selector is not a valid selector: ${f.selector} (name=${f.name})`,
+        );
+      }
+    }
+  }
+
+  // ADR-0019: classify.rules[].match.pattern が実際に RegExp としてコンパイル可能かを検証する。
+  // 形状 (1..200文字) は zod で検証済みだが、compile 可能性は zod だけでは表現しにくく、
+  // かつ専用のエラーコード (invalid_classify) を返したいためここで行う。
+  if (config?.classify) {
+    for (const rule of config.classify.rules) {
+      try {
+        new RegExp(rule.match.pattern, rule.match.flags ?? '');
+      } catch {
+        throw badRequest(
+          'invalid_classify',
+          `classify rule pattern is not a valid RegExp: ${rule.match.pattern} (tag=${rule.tag})`,
         );
       }
     }

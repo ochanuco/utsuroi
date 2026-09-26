@@ -69,6 +69,21 @@ export function serializeSource(row: SourceRow) {
           ignore_selectors: row.config.ignoreSelectors ?? null,
           include_selectors: row.config.includeSelectors ?? null,
           strip_query_params: row.config.stripQueryParams ?? null,
+          // ADR-0019: 決定論的 Classify 段の設定。API入力と同じ形状 (snake_case はキー名のみ) なので
+          // 値自体は passthrough する。
+          classify: row.config.classify
+            ? {
+                rules: row.config.classify.rules.map((rule) => ({
+                  tag: rule.tag,
+                  match: {
+                    field: rule.match.field,
+                    pattern: rule.match.pattern,
+                    flags: rule.match.flags ?? null,
+                  },
+                })),
+                default_tag: row.config.classify.defaultTag ?? null,
+              }
+            : null,
         }
       : null,
     // Source が実行するパイプラインの Stage 列 (可視化用、ADR-0016)。実行時の processor 選択
@@ -165,6 +180,8 @@ export function serializeChange(row: ChangeRow) {
     has_diff: row.diffR2Key !== null,
     diff_preview: row.diffPreview,
     title: row.title,
+    // ADR-0019: Classify段が付けたタグ。null=未分類、[]=分類済みでタグ無し。
+    tags: row.tags,
     detected_at: row.detectedAt,
     created_at: row.createdAt,
   };
@@ -187,6 +204,8 @@ export function serializeDestination(row: DestinationRow) {
     webhook_url_masked: webhookUrlMasked,
     enabled: row.enabled,
     archived_at: row.archivedAt,
+    // ADR-0019: 設定時、配送 URL に ?thread_id= を付けて Discord スレッドへ送る。
+    thread_id: row.threadId,
     created_at: row.createdAt,
     updated_at: row.updatedAt,
   };

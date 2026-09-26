@@ -9,6 +9,7 @@
  * 統合前にハードコードしていた 'updated' と結果は一致する)。
  */
 import { createDeliveryIfNew, listMatchingSubscriptions, setTargetLastKnownUpdatedAt, type ChangeRow } from '../db';
+import type { FeedItem } from '../shared/contracts';
 import type { CheckContext } from './types';
 
 /**
@@ -24,6 +25,9 @@ export async function fanoutChange(ctx: CheckContext, change: ChangeRow): Promis
     siteId: ctx.site.id,
     monitorId: ctx.monitor.id,
     kind: change.kind,
+    // ADR-0019: change.tags は Classify段が付けたタグ。未分類 (null) は空配列として扱い、
+    // ワイルドカード (tag IS NULL) Subscription のみに一致させる。
+    tags: change.tags ?? [],
   });
   for (const sub of subs) {
     const delivery = await createDeliveryIfNew(ctx.db, change.id, sub.destinationId);
@@ -44,6 +48,12 @@ export interface DetectedChange {
   row: ChangeRow;
   inserted: boolean;
   watermarkAdvance?: { targetId: string; updatedAt: string };
+  /**
+   * Detect段が検知に使った元の Item (ADR-0019)。Classify段 (classify.ts) が url/summary/fields を
+   * 参照するために運ぶ — title は enrich 後の d.row.title を優先するため、ここには含めない
+   * (Classify段は d.row.title ?? item.title を使う)。
+   */
+  item?: FeedItem;
 }
 
 /**

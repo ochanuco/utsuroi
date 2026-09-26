@@ -52,6 +52,7 @@ import {
 import { bodyKey, putIfAbsent } from './r2';
 import { notifyDetectedChanges, type DetectedChange } from './notify';
 import { enrichDetectedChanges } from './enrichTitle';
+import { classifyDetectedChanges } from './classify';
 import type { CheckContext } from './types';
 
 /** Sitemap Index 配下の子 Sitemap の取得上限 (1回のチェックあたり) */
@@ -192,7 +193,8 @@ async function detectFeedChanges(
         diffPreview: opts.summaryAsDiffPreview ? (item.summary ?? undefined) : undefined,
       });
       // 'new' は upsertTarget 時に初期 watermark を記録済みのため watermarkAdvance は不要。
-      detected.push({ row: inserted.row, inserted: inserted.inserted });
+      // item は Classify段 (ADR-0019) が url/summary/fields を照合するために運ぶ。
+      detected.push({ row: inserted.row, inserted: inserted.inserted, item });
       continue;
     }
 
@@ -223,6 +225,7 @@ async function detectFeedChanges(
         row: inserted.row,
         inserted: inserted.inserted,
         watermarkAdvance: { targetId: target.id, updatedAt: item.updatedAt },
+        item,
       });
     }
   }
@@ -232,12 +235,14 @@ async function detectFeedChanges(
 
 /**
  * rss/atom/sitemap の item 一覧を Target 化し、新規/更新を検出して通知する。
- * Detect段 (detectFeedChanges) → Enrich段 (enrichTitle.ts の enrichDetectedChanges) → Notify段
- * (notify.ts の notifyDetectedChanges) の順に呼ぶだけのオーケストレータ (ADR-0016 Step 3)。
+ * Detect段 (detectFeedChanges) → Enrich段 (enrichTitle.ts の enrichDetectedChanges) → Classify段
+ * (classify.ts の classifyDetectedChanges) → Notify段 (notify.ts の notifyDetectedChanges) の順に
+ * 呼ぶだけのオーケストレータ (ADR-0016 Step 3, ADR-0019 で Classify段を追加)。
  * Detect段が全 item の Change 挿入を先に済ませ、Enrich段が kind='new' かつ title 無しの Change に
- * ページ本文の `<title>` を補完し、Notify段がその結果を item 処理順に fanout → changeIds 追加 →
+ * ページ本文の `<title>` を補完し、Classify段が Source の config.classify に基づきタグを付け、
+ * Notify段がその結果を item 処理順に fanout (タグ一致する Subscription へ) → changeIds 追加 →
  * watermark 前進する。item 単位で完結していた分割前と最終的な DB 状態・Queue 送信集合・changeIds は
- * (title 補完を除き) 同一になる。
+ * (title 補完・タグ付けを除き) 同一になる。
  *
  * @param maxItems 1回の呼び出しで処理する item 数の上限 (既定 MAX_FEED_ITEMS_PER_CHECK)。
  *   超過分はスキップし (target/change を作らない)、次回以降のチェックに持ち越される。
@@ -254,6 +259,7 @@ export async function processFeedItems(
 ): Promise<ProcessFeedItemsResult> {
   const { detected, truncatedCount } = await detectFeedChanges(ctx, items, maxItems, opts);
   await enrichDetectedChanges(ctx, detected);
+  await classifyDetectedChanges(ctx, detected);
   await notifyDetectedChanges(ctx, detected);
   return { truncatedCount };
 }
