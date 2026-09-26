@@ -20,3 +20,4 @@
 | [0016](0016-source-pipeline-stages.md) | Source Pipelineを可変Stage合成として表現する（中間表現Item[]統一・Stage 2系統・DO境界不変、traverseは取得内包Stage） | Proposed |
 | [0017](0017-robots-origin-normalization-and-transient-unavailable.md) | robots canonical_originを正規化し、一過性のrobots.txt取得不能では停止しない（連続3回で初めてPolicy Stop） | Accepted |
 | [0018](0018-dry-run-endpoint.md) | URL単発の下見用DryRunエンドポイント（副作用なし、robotsは判定して報告するのみ、SSRFは強制） | Accepted |
+| [0019](0019-tag-based-notification-routing.md) | Changeのタグによる通知ルーティング（Classify段が決定論ルールとjevでタグ付け、Subscription.tagで宛先選択、Destinationにthread_id） | Proposed |
