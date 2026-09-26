@@ -168,11 +168,30 @@ async function extractRetryAfterSeconds(res: Response): Promise<number | null> {
 export async function sendToDiscord(
   webhookUrl: string,
   payload: object,
-  opts?: { fetch?: typeof fetch },
+  opts?: { fetch?: typeof fetch; threadId?: string | null },
 ): Promise<DiscordSendResult> {
+  // thread_id (ADR-0019) は URL パース段階で付与し、以降の SSRF/ホスト検査・実送信は
+  // すべてこの最終 URL (target) に対して行う。thread_id は登録時 (destinations ルート) に
+  // 17-20桁の数字として検証済みだが、防御的に URLSearchParams 経由で付与する。
+  let target: URL;
+  try {
+    target = new URL(webhookUrl);
+  } catch {
+    return {
+      ok: false,
+      status: SSRF_BLOCKED_STATUS,
+      retryAfterSeconds: null,
+      message: 'discord webhook delivery failed: invalid webhook url',
+    };
+  }
+  if (opts?.threadId) {
+    target.searchParams.set('thread_id', opts.threadId);
+  }
+  const finalUrl = target.toString();
+
   // 送信直前の再検証 (登録時だけでなく送信時にも SSRF ポリシーを適用する, SPEC §15)。
   // 拒否は permanent failure 扱いとする (リトライしても結果は変わらないため)。
-  const ssrf = checkUrlForSsrf(webhookUrl);
+  const ssrf = checkUrlForSsrf(finalUrl);
   if (!ssrf.allowed) {
     return {
       ok: false,
@@ -184,18 +203,7 @@ export async function sendToDiscord(
 
   // ホスト名を Discord の既知ドメインへ限定する (DNS rebinding への回答、上記コメント参照)。
   // registration 時 (destinations ルート) の検査に加え、送信直前にも必ず適用する。
-  let hostname: string;
-  try {
-    hostname = new URL(webhookUrl).hostname;
-  } catch {
-    return {
-      ok: false,
-      status: SSRF_BLOCKED_STATUS,
-      retryAfterSeconds: null,
-      message: 'discord webhook delivery failed: invalid webhook url',
-    };
-  }
-  if (!isDiscordWebhookHost(hostname)) {
+  if (!isDiscordWebhookHost(target.hostname)) {
     return {
       ok: false,
       status: SSRF_BLOCKED_STATUS,
@@ -208,7 +216,7 @@ export async function sendToDiscord(
 
   let res: Response;
   try {
-    res = await doFetch(webhookUrl, {
+    res = await doFetch(finalUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),

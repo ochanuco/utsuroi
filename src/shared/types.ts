@@ -71,3 +71,6 @@ export type CheckJobStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'p
 export type DeliveryStatus = 'pending' | 'sending' | 'delivered' | 'failed' | 'dead';
 
 export type RobotsMode = 'enforce' | 'ignore';
+
+/** Change タグ / Subscription.tag の形式 (ADR-0019)。小文字英数字始まり、以降 `:_-` を許容 */
+export const TAG_PATTERN = /^[a-z0-9][a-z0-9:_-]{0,63}$/;

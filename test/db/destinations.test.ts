@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { archiveDestination, createSubscription, getDestination, listMatchingSubscriptions, listSubscriptionsByDestination } from '../../src/db';
+import {
+  archiveDestination,
+  createDeliveryIfNew,
+  createDestination,
+  createSubscription,
+  getDestination,
+  insertChangeIfNew,
+  listMatchingSubscriptions,
+  listSubscriptionsByDestination,
+} from '../../src/db';
 import { buildFixture, db } from './helpers';
 
 describe('archiveDestination (ADR-0012: soft delete)', () => {
@@ -61,5 +70,111 @@ describe('listMatchingSubscriptions excludes archived destinations (ADR-0012)', 
 
     const fetchedDestination = await getDestination(d, destination.id);
     expect(fetchedDestination?.archivedAt).toBeNull();
+  });
+});
+
+describe('listMatchingSubscriptions: tag matching (ADR-0019)', () => {
+  it('matches a NULL-tag subscription regardless of the change tags passed', async () => {
+    const d = db();
+    const { destination, site, monitor } = await buildFixture(d);
+    await createSubscription(d, { destinationId: destination.id, siteId: site.id, monitorId: monitor.id, tag: null });
+
+    const noTags = await listMatchingSubscriptions(d, { siteId: site.id, monitorId: monitor.id, kind: 'new', tags: [] });
+    expect(noTags).toHaveLength(1);
+
+    const withTags = await listMatchingSubscriptions(d, {
+      siteId: site.id,
+      monitorId: monitor.id,
+      kind: 'new',
+      tags: ['area:kuzuha'],
+    });
+    expect(withTags).toHaveLength(1);
+  });
+
+  it('matches a tagged subscription only when the change carries that tag', async () => {
+    const d = db();
+    const { destination, site, monitor } = await buildFixture(d);
+    await createSubscription(d, {
+      destinationId: destination.id,
+      siteId: site.id,
+      monitorId: monitor.id,
+      tag: 'area:kuzuha',
+    });
+
+    const matching = await listMatchingSubscriptions(d, {
+      siteId: site.id,
+      monitorId: monitor.id,
+      kind: 'new',
+      tags: ['area:kuzuha'],
+    });
+    expect(matching).toHaveLength(1);
+
+    const nonMatching = await listMatchingSubscriptions(d, {
+      siteId: site.id,
+      monitorId: monitor.id,
+      kind: 'new',
+      tags: ['area:other'],
+    });
+    expect(nonMatching).toHaveLength(0);
+
+    const untagged = await listMatchingSubscriptions(d, { siteId: site.id, monitorId: monitor.id, kind: 'new' });
+    expect(untagged).toHaveLength(0);
+  });
+
+  it('reaches multiple subscriptions when a change carries multiple tags', async () => {
+    const d = db();
+    const { destination, site, monitor } = await buildFixture(d);
+    const otherDestination = await createDestination(d, {
+      name: 'Other Discord',
+      webhookUrl: 'https://discord.com/api/webhooks/multi-tag',
+    });
+    await createSubscription(d, { destinationId: destination.id, siteId: site.id, monitorId: monitor.id, tag: 'area:kuzuha' });
+    await createSubscription(d, {
+      destinationId: otherDestination.id,
+      siteId: site.id,
+      monitorId: monitor.id,
+      tag: 'topic:sale',
+    });
+
+    const matches = await listMatchingSubscriptions(d, {
+      siteId: site.id,
+      monitorId: monitor.id,
+      kind: 'new',
+      tags: ['area:kuzuha', 'topic:sale'],
+    });
+    expect(matches.map((s) => s.destinationId).sort()).toEqual([destination.id, otherDestination.id].sort());
+  });
+
+  it('does not create a duplicate delivery when two matching subscriptions point to the same destination', async () => {
+    const d = db();
+    const { destination, site, monitor, target } = await buildFixture(d);
+    // 同じ destination を複数の tag で購読する構成 (例: "area:kuzuha" と "area:other" の両方を
+    // 同じチャンネルへ流したい場合)。fanout はこの destination へ2回 createDeliveryIfNew を
+    // 呼ぶことになるが、UNIQUE(change_id, destination_id) により2件目は inserted:false になる。
+    await createSubscription(d, { destinationId: destination.id, siteId: site.id, monitorId: monitor.id, tag: 'area:kuzuha' });
+    await createSubscription(d, { destinationId: destination.id, siteId: site.id, monitorId: monitor.id, tag: 'topic:sale' });
+
+    const matches = await listMatchingSubscriptions(d, {
+      siteId: site.id,
+      monitorId: monitor.id,
+      kind: 'new',
+      tags: ['area:kuzuha', 'topic:sale'],
+    });
+    expect(matches).toHaveLength(2);
+
+    const change = await insertChangeIfNew(d, {
+      monitorId: monitor.id,
+      targetId: target.id,
+      targetUrl: target.url,
+      kind: 'new',
+      dedupeKey: 'multi-tag-same-destination',
+      detectedAt: new Date().toISOString(),
+    });
+
+    const first = await createDeliveryIfNew(d, change.row.id, destination.id);
+    const second = await createDeliveryIfNew(d, change.row.id, destination.id);
+    expect(first.inserted).toBe(true);
+    expect(second.inserted).toBe(false);
+    expect(second.row.id).toBe(first.row.id);
   });
 });

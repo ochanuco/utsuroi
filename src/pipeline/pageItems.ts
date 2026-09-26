@@ -96,6 +96,8 @@ export async function processPageItems(
       publishedAt: item.publishedAt,
       updatedAt: item.updatedAt,
       summary: formatFieldsAsSummary(item.fields),
+      // Classify段 (ADR-0019) が extract.fields[].name で照合できるよう、整形前の生フィールドも運ぶ。
+      fields: item.fields,
     }));
     await processFeedItems(ctx, items, undefined, { summaryAsDiffPreview: true });
   }

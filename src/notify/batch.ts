@@ -55,7 +55,10 @@ async function processOne(
   }
 
   const payload = buildDiscordPayload(pending.change);
-  const result = await sendToDiscord(pending.webhookUrl, payload, { fetch: opts.fetch });
+  const result = await sendToDiscord(pending.webhookUrl, payload, {
+    fetch: opts.fetch,
+    threadId: pending.threadId ?? null,
+  });
 
   if (result.ok) {
     await store.markDelivered(deliveryId);

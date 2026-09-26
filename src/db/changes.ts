@@ -1,6 +1,6 @@
 import type { ChangeKind, DiffLevel } from '../shared/types';
 import type { ChangeRow, CreateChangeInput, InsertResult } from './types';
-import { newId, nowIso, wasWritten } from './util';
+import { newId, nowIso, parseJson, wasWritten } from './util';
 
 function mapRow(row: Record<string, unknown>): ChangeRow {
   return {
@@ -16,6 +16,7 @@ function mapRow(row: Record<string, unknown>): ChangeRow {
     diffR2Key: (row.diff_r2_key as string | null) ?? null,
     diffPreview: (row.diff_preview as string | null) ?? null,
     title: (row.title as string | null) ?? null,
+    tags: parseJson<string[] | null>(row.tags as string | null, null),
     detectedAt: row.detected_at as string,
     createdAt: row.created_at as string,
   };
@@ -76,6 +77,7 @@ export async function insertChangeIfNew(
         diffR2Key: input.diffR2Key ?? null,
         diffPreview: input.diffPreview ?? null,
         title: input.title ?? null,
+        tags: null,
         detectedAt,
         createdAt: now,
       },
@@ -93,6 +95,24 @@ export async function insertChangeIfNew(
 /** title enrich (ADR-0016 Enrich段) で取得した `<title>` を Change へ書き戻す */
 export async function updateChangeTitle(db: D1Database, changeId: string, title: string): Promise<void> {
   await db.prepare(`UPDATE changes SET title = ? WHERE id = ?`).bind(title, changeId).run();
+}
+
+/**
+ * Classify段 (ADR-0019) が計算したタグを、まだ未分類 (tags IS NULL) の Change にだけ書き込む。
+ * 条件付き UPDATE により、同じ Change を再度分類してしまう (= 再試行のたびに宛先が変わりうる)
+ * ことを防ぐ。呼び出し側 (src/pipeline/classify.ts) は戻り値を DetectedChange.row.tags に反映し、
+ * 常に「実際に保存されている値」を見るようにする — 0行更新 (=既に他の呼び出しが分類済み) の場合は
+ * 保存済みの値を読み直して返す。
+ */
+export async function setChangeTagsIfNull(db: D1Database, changeId: string, tags: string[]): Promise<string[] | null> {
+  const result = await db
+    .prepare(`UPDATE changes SET tags = ? WHERE id = ? AND tags IS NULL`)
+    .bind(JSON.stringify(tags), changeId)
+    .run();
+  if (wasWritten(result)) return tags;
+
+  const existing = await db.prepare(`SELECT tags FROM changes WHERE id = ?`).bind(changeId).first<{ tags: string | null }>();
+  return existing ? parseJson<string[] | null>(existing.tags, null) : null;
 }
 
 export async function getChange(db: D1Database, id: string): Promise<ChangeRow | null> {

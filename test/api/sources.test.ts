@@ -126,6 +126,7 @@ describe('POST /api/sources: config (ADR-0010 Phase B sitemapMode)', () => {
       ignore_selectors: null,
       include_selectors: null,
       strip_query_params: null,
+      classify: null,
     });
   });
 
@@ -333,6 +334,7 @@ describe('POST /api/sources: config (ADR-0011 page item extraction)', () => {
       ignore_selectors: null,
       include_selectors: null,
       strip_query_params: null,
+      classify: null,
     });
   });
 
@@ -817,5 +819,289 @@ describe('DELETE /api/sources/:id (Site/Source/Monitor削除機能)', () => {
     // still present since deletion was rejected
     const getRes = await app.request(`/api/sources/${source.id}`, { headers: authHeaders() }, testEnv());
     expect(getRes.status).toBe(200);
+  });
+});
+
+// ADR-0019: 決定論的 Classify 段の設定。rss/atom は classify のみ、page は page_mode==='extract'
+// のときのみ、sitemap/sitemap-index は sitemap_mode==='traverse' のときのみ受け付ける。
+describe('POST /api/sources: config (ADR-0019 classify)', () => {
+  const validClassify = {
+    rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉|樟葉' } }],
+    default_tag: 'area:other',
+  };
+  // serializeSource は match.flags を null passthrough で埋める (他 config キーと同じ流儀) ため、
+  // 送信した config (flags 省略) とレスポンスの期待値は一致しない。比較用に別途定義する。
+  const validClassifySerialized = {
+    rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉|樟葉', flags: null } }],
+    default_tag: 'area:other',
+  };
+
+  it('creates an rss source with a classify-only config (201) and echoes it back', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'rss',
+          url: 'https://example.com/feed.xml',
+          config: { classify: validClassify },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.config.classify).toEqual(validClassifySerialized);
+  });
+
+  it('rejects an rss source config with a key other than classify (400 config_not_applicable)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'atom',
+          url: 'https://example.com/atom.xml',
+          config: { classify: validClassify, sitemap_mode: 'traverse' },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error.code).toBe('config_not_applicable');
+  });
+
+  it('rejects classify on a content-mode (default) page source (400 config_not_applicable)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'page',
+          url: 'https://example.com/content-mode-classify',
+          config: { classify: validClassify },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error.code).toBe('config_not_applicable');
+  });
+
+  it('accepts classify on an extract-mode page source (201)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'page',
+          url: 'https://example.com/extract-mode-classify',
+          config: {
+            page_mode: 'extract',
+            extract: { item_selector: '.property_unit' },
+            classify: validClassify,
+          },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.config.classify).toEqual(validClassifySerialized);
+  });
+
+  it('rejects classify on a sitemap-index source in direct mode (400 config_not_applicable)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'sitemap-index',
+          url: 'https://example.com/direct-mode-classify.xml',
+          config: { classify: validClassify },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error.code).toBe('config_not_applicable');
+  });
+
+  it('accepts classify on a sitemap source in traverse mode (201)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'sitemap',
+          url: 'https://example.com/traverse-mode-classify.xml',
+          config: { sitemap_mode: 'traverse', classify: validClassify },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.config.classify).toEqual(validClassifySerialized);
+  });
+
+  it('rejects an invalid regex pattern (400 invalid_classify)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'rss',
+          url: 'https://example.com/invalid-pattern.xml',
+          config: { classify: { rules: [{ tag: 'broken', match: { field: 'title', pattern: '(' } }] } },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error.code).toBe('invalid_classify');
+  });
+
+  it('rejects a flags value other than "i" (400)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'rss',
+          url: 'https://example.com/bad-flags.xml',
+          config: { classify: { rules: [{ tag: 'x', match: { field: 'title', pattern: 'a', flags: 'g' } }] } },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an invalid tag / default_tag format (400)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const invalidConfigs = [
+      { rules: [{ tag: 'Area:Kuzuha', match: { field: 'title', pattern: 'x' } }] }, // uppercase not allowed
+      { rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: 'x' } }], default_tag: 'Bad Tag' },
+    ];
+    for (const classify of invalidConfigs) {
+      const res = await app.request(
+        '/api/sources',
+        {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({
+            site_id: site.id,
+            type: 'rss',
+            url: `https://example.com/bad-tag-${JSON.stringify(classify)}.xml`,
+            config: { classify },
+          }),
+        },
+        testEnv()
+      );
+      expect(res.status, `expected 400 for classify ${JSON.stringify(classify)}`).toBe(400);
+    }
+  });
+
+  it('rejects more than 20 rules (400)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const rules = Array.from({ length: 21 }, (_, i) => ({
+      tag: `tag-${i}`,
+      match: { field: 'title', pattern: `p${i}` },
+    }));
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'rss',
+          url: 'https://example.com/too-many-rules.xml',
+          config: { classify: { rules } },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('updates classify config via PATCH on an rss source', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+    const created = (
+      await (
+        await app.request(
+          '/api/sources',
+          {
+            method: 'POST',
+            headers: jsonHeaders(),
+            body: JSON.stringify({
+              site_id: site.id,
+              type: 'rss',
+              url: 'https://example.com/patch-classify.xml',
+              config: { classify: validClassify },
+            }),
+          },
+          testEnv()
+        )
+      ).json()
+    ) as any;
+
+    const updatedClassify = {
+      rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉', flags: 'i' } }],
+    };
+    const res = await app.request(
+      `/api/sources/${created.id}`,
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ config: { classify: updatedClassify } }) },
+      testEnv()
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.config.classify).toEqual({ ...updatedClassify, default_tag: null });
   });
 });

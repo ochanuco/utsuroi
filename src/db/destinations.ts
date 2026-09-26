@@ -14,6 +14,7 @@ function mapDestinationRow(row: Record<string, unknown>): DestinationRow {
     webhookUrl: row.webhook_url as string,
     enabled: toBool(row.enabled as number),
     archivedAt: (row.archived_at as string | null) ?? null,
+    threadId: (row.thread_id as string | null) ?? null,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   };
@@ -39,13 +40,23 @@ export async function createDestination(
   const id = input.id ?? newId();
   const now = nowIso();
   const enabled = input.enabled ?? true;
+  const threadId = input.threadId ?? null;
   await db
     .prepare(
-      `INSERT INTO destinations (id, name, webhook_url, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO destinations (id, name, webhook_url, enabled, thread_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(id, input.name, input.webhookUrl, fromBool(enabled), now, now)
+    .bind(id, input.name, input.webhookUrl, fromBool(enabled), threadId, now, now)
     .run();
-  return { id, name: input.name, webhookUrl: input.webhookUrl, enabled, archivedAt: null, createdAt: now, updatedAt: now };
+  return {
+    id,
+    name: input.name,
+    webhookUrl: input.webhookUrl,
+    enabled,
+    archivedAt: null,
+    threadId,
+    createdAt: now,
+    updatedAt: now,
+  };
 }
 
 export async function getDestination(db: D1Database, id: string): Promise<DestinationRow | null> {
@@ -77,6 +88,24 @@ export async function archiveDestination(db: D1Database, id: string): Promise<De
       )
       .bind(now, now, id),
   ]);
+  return getDestination(db, id);
+}
+
+/**
+ * Destination の thread_id だけを更新する (ADR-0019、PATCH /api/destinations/:id)。
+ * url/enabled 等の他フィールドはここでは変更しない。対象が存在しない、またはアーカイブ済みの場合は null。
+ * ルート側のアーカイブ判定と並行してアーカイブされても、アーカイブ済み行を更新しないよう条件に含める。
+ */
+export async function updateDestinationThreadId(
+  db: D1Database,
+  id: string,
+  threadId: string | null
+): Promise<DestinationRow | null> {
+  const result = await db
+    .prepare(`UPDATE destinations SET thread_id = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL`)
+    .bind(threadId, nowIso(), id)
+    .run();
+  if ((result.meta?.changes ?? 0) === 0) return null;
   return getDestination(db, id);
 }
 
@@ -126,15 +155,19 @@ export async function listSubscriptionsByDestination(
 }
 
 /**
- * Change に一致する Subscription (site/monitor/kind でのフィルタ、いずれも NULL ならワイルドカード) を
- * 一致する Destination とともに返す。Subscription 配信ファンアウト (SPEC §14) の入力に使う。
+ * Change に一致する Subscription (site/monitor/kind/tag でのフィルタ、いずれも NULL ならワイルドカード) を
+ * 一致する Destination とともに返す。Subscription 配信ファンアウト (SPEC §14, ADR-0019) の入力に使う。
  *
  * destinations を JOIN し archived_at IS NULL を条件に加える (ADR-0012)。アーカイブ時に従属
  * subscriptions は削除されるが、それとは独立にファンアウト側でも二重に防御する。
+ *
+ * tag マッチ (ADR-0019): `s.tag IS NULL` は従来どおりワイルドカードで全 Change に一致する
+ * (既存 Subscription の挙動は変わらない)。非NULLの場合、match.tags (Change が持つタグ配列)
+ * に含まれるときのみ一致する。tags 省略時は空配列扱い (ワイルドカード Subscription のみ一致)。
  */
 export async function listMatchingSubscriptions(
   db: D1Database,
-  match: { siteId: string; monitorId: string; kind: ChangeKind }
+  match: { siteId: string; monitorId: string; kind: ChangeKind; tags?: string[] }
 ): Promise<SubscriptionRow[]> {
   const { results } = await db
     .prepare(
@@ -143,10 +176,11 @@ export async function listMatchingSubscriptions(
        WHERE (s.site_id IS NULL OR s.site_id = ?)
          AND (s.monitor_id IS NULL OR s.monitor_id = ?)
          AND (s.change_kind IS NULL OR s.change_kind = ?)
+         AND (s.tag IS NULL OR s.tag IN (SELECT value FROM json_each(?)))
          AND d.archived_at IS NULL
        ORDER BY s.created_at ASC`
     )
-    .bind(match.siteId, match.monitorId, match.kind)
+    .bind(match.siteId, match.monitorId, match.kind, JSON.stringify(match.tags ?? []))
     .all();
   return results.map(mapSubscriptionRow);
 }

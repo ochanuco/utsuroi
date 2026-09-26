@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { archiveDestination, createD1NotifyStore, createDeliveryIfNew, getDelivery, insertChangeIfNew } from '../../src/db';
+import {
+  archiveDestination,
+  createD1NotifyStore,
+  createDeliveryIfNew,
+  createDestination,
+  encryptWebhookUrl,
+  getDelivery,
+  insertChangeIfNew,
+} from '../../src/db';
 import { buildFixture, db, FIXTURE_WEBHOOK_URL, TEST_WEBHOOK_ENC_KEY } from './helpers';
 
 describe('createD1NotifyStore (implements src/shared/contracts.ts NotifyStore)', () => {
@@ -45,6 +53,46 @@ describe('createD1NotifyStore (implements src/shared/contracts.ts NotifyStore)',
 
     const afterDelivered = await store.getPendingDelivery(delivery.row.id);
     expect(afterDelivered).toBeNull();
+  });
+
+  it('reports threadId as null when the destination has no thread_id (ADR-0019)', async () => {
+    const d = db();
+    const store = createD1NotifyStore(d, TEST_WEBHOOK_ENC_KEY);
+    const { monitor, target, destination } = await buildFixture(d);
+    const change = await insertChangeIfNew(d, {
+      monitorId: monitor.id,
+      targetId: target.id,
+      targetUrl: target.url,
+      kind: 'updated',
+      dedupeKey: 'sha256:notify-thread-null',
+    });
+    const delivery = await createDeliveryIfNew(d, change.row.id, destination.id);
+
+    const pending = await store.getPendingDelivery(delivery.row.id);
+    expect(pending?.threadId).toBeNull();
+  });
+
+  it('reports the destination thread_id when set (ADR-0019)', async () => {
+    const d = db();
+    const store = createD1NotifyStore(d, TEST_WEBHOOK_ENC_KEY);
+    const { monitor, target } = await buildFixture(d);
+    const encryptedWebhookUrl = await encryptWebhookUrl(FIXTURE_WEBHOOK_URL, 'discord.com/***test', TEST_WEBHOOK_ENC_KEY);
+    const destination = await createDestination(d, {
+      name: 'Threaded Discord',
+      webhookUrl: encryptedWebhookUrl,
+      threadId: '123456789012345678',
+    });
+    const change = await insertChangeIfNew(d, {
+      monitorId: monitor.id,
+      targetId: target.id,
+      targetUrl: target.url,
+      kind: 'updated',
+      dedupeKey: 'sha256:notify-thread-set',
+    });
+    const delivery = await createDeliveryIfNew(d, change.row.id, destination.id);
+
+    const pending = await store.getPendingDelivery(delivery.row.id);
+    expect(pending?.threadId).toBe('123456789012345678');
   });
 
   it('a dead delivery is also treated as terminal (returns null)', async () => {

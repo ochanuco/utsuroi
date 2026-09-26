@@ -11,6 +11,7 @@ import {
   getDestination,
   listDestinations,
   recordAuditEvent,
+  updateDestinationThreadId,
 } from '../../db';
 import { checkUrlForSsrf } from '../../net';
 import { isDiscordWebhookHost } from '../../notify/discord';
@@ -20,10 +21,20 @@ import { paginate, parsePagination, parseWith, readJsonBody } from '../http';
 import { deleteDestinationById, isForeignKeyConstraintError } from '../rawQueries';
 import { serializeDestination } from '../serialize';
 
+/** Discord のスレッド ID (snowflake)。17〜20桁の数字文字列 (ADR-0019) */
+const THREAD_ID_PATTERN = /^\d{17,20}$/;
+
 const createDestinationSchema = z.object({
   name: z.string().min(1),
   webhook_url: z.string().min(1),
+  thread_id: z.string().regex(THREAD_ID_PATTERN, 'thread_id must be a 17-20 digit snowflake').nullable().optional(),
 });
+
+// ADR-0019: PATCH /api/destinations/:id は thread_id のみを更新する単一フィールドPATCH
+// (source.update_config と同じ形)。url/webhook_url/name/enabled はここでは変更しない。
+const updateDestinationSchema = z.object({
+  thread_id: z.string().regex(THREAD_ID_PATTERN, 'thread_id must be a 17-20 digit snowflake').nullable(),
+}).strict();
 
 /** 絶対 http(s) URL であること、および SSRF ポリシー (private/metadata/userinfo/不正ポート) を検査する */
 function assertValidWebhookUrl(url: string): void {
@@ -69,8 +80,37 @@ export function destinationsRoutes() {
     const masked = maskWebhookUrl(body.webhook_url);
     const encryptedWebhookUrl = await encryptWebhookUrl(body.webhook_url, masked, encKey);
 
-    const destination = await createDestination(c.env.DB, { name: body.name, webhookUrl: encryptedWebhookUrl });
+    const destination = await createDestination(c.env.DB, {
+      name: body.name,
+      webhookUrl: encryptedWebhookUrl,
+      threadId: body.thread_id ?? null,
+    });
     return c.json(serializeDestination(destination), 201);
+  });
+
+  // ADR-0019: Discord スレッドへの投稿先を後から設定/変更する。archived な Destination への
+  // 更新は subscriptions.ts の createSubscription と同じ 400 destination_archived にする
+  // (archive 済みは webhook_url が破棄済みで実質配送不能なため、設定変更自体を許可しない)。
+  router.patch('/:id', async (c) => {
+    const id = c.req.param('id');
+    const destination = await getDestination(c.env.DB, id);
+    if (!destination) throw notFound('destination_not_found', 'destination not found');
+    if (destination.archivedAt !== null) {
+      throw badRequest('destination_archived', 'cannot update an archived destination');
+    }
+
+    const body = parseWith(updateDestinationSchema, await readJsonBody(c));
+    const updated = await updateDestinationThreadId(c.env.DB, id, body.thread_id);
+    if (!updated) throw notFound('destination_not_found', 'destination not found');
+
+    await recordAuditEvent(c.env.DB, {
+      actor: 'admin',
+      action: 'destination.update',
+      subject: id,
+      payload: { before: { threadId: destination.threadId }, after: { threadId: updated.threadId } },
+    });
+
+    return c.json(serializeDestination(updated));
   });
 
   router.get('/', async (c) => {

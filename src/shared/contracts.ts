@@ -116,6 +116,8 @@ export interface FeedItem {
   publishedAt: string | null;
   updatedAt: string | null; // sitemap の lastmod もここ
   summary: string | null;
+  /** ADR-0013 extract.fields の抽出結果 (構造化フィールド)。Classify段 (ADR-0019) の照合対象 */
+  fields?: Array<{ name: string; value: string }>;
 }
 
 export interface AdapterParseResult {
@@ -189,6 +191,8 @@ export interface PendingDelivery {
   change: ChangeSummary;
   webhookUrl: string;
   attemptCount: number;
+  /** 配送先 Destination の Discord スレッド指定 (ADR-0019)。未設定なら null */
+  threadId?: string | null;
 }
 
 /**
