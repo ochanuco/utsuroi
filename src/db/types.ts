@@ -95,6 +95,16 @@ export interface SourceConfig {
     }>;
     /** どのルールにも一致しなかった Change に付けるタグ */
     defaultTag?: string;
+    /**
+     * Discord通知の埋め込みに表示する日本語ラベル (labels機能)。未設定ならタグ生値をそのまま表示する。
+     * 解決ロジックは src/db/notifyStore.ts の resolveTagLines 参照。
+     */
+    labels?: {
+      /** タグの先頭コロン前 (prefix) -> 見出し文字列。最大20件、key は ^[a-z0-9_-]{1,64}$、value は1..20文字 */
+      groups?: Record<string, string>;
+      /** タグ (TAG_PATTERN) -> 表示文字列。最大50件、value は1..40文字 */
+      tags?: Record<string, string>;
+    };
   };
 }
 

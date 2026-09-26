@@ -82,6 +82,15 @@ export function serializeSource(row: SourceRow) {
                   },
                 })),
                 default_tag: row.config.classify.defaultTag ?? null,
+                // labels機能: 未設定 (classify.labels 自体が無い) なら null。groups/tags は
+                // それぞれ独立に省略可能なため、classify.labels はあるが片方だけ無い場合も
+                // null passthrough で揃える (他 config キーと同じ流儀)。
+                labels: row.config.classify.labels
+                  ? {
+                      groups: row.config.classify.labels.groups ?? null,
+                      tags: row.config.classify.labels.tags ?? null,
+                    }
+                  : null,
               }
             : null,
         }

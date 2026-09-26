@@ -70,10 +70,22 @@ const classifyRuleSchema = z
   })
   .strict();
 
+// labels機能: Discord通知のタグ行に使う日本語ラベル。key の書式・件数上限は zod では
+// (record の key 制約という形で) 表現しにくいため、形状 (Record<string,string>) だけ zod で
+// 検証し、key書式・value長・件数上限は classify.rules.match.pattern と同様に
+// validateSourceConfig 側で invalid_classify として検証する。
+const classifyLabelsSchema = z
+  .object({
+    groups: z.record(z.string(), z.string()).optional(),
+    tags: z.record(z.string(), z.string()).optional(),
+  })
+  .strict();
+
 const classifyConfigSchema = z
   .object({
     rules: z.array(classifyRuleSchema).min(1).max(20),
     default_tag: z.string().regex(TAG_PATTERN, 'default_tag must match ^[a-z0-9][a-z0-9:_-]{0,63}$').optional(),
+    labels: classifyLabelsSchema.optional(),
   })
   .strict();
 
@@ -185,6 +197,7 @@ function toSourceConfig(input: SourceConfigInput | undefined): SourceConfig | un
         },
       })),
       ...(input.classify.default_tag !== undefined ? { defaultTag: input.classify.default_tag } : {}),
+      ...(input.classify.labels !== undefined ? { labels: input.classify.labels } : {}),
     };
   }
   return config;
@@ -286,6 +299,40 @@ function validateSourceConfig(type: SourceRow['type'], config: SourceConfigInput
           'invalid_classify',
           `classify rule pattern is not a valid RegExp: ${rule.match.pattern} (tag=${rule.tag})`,
         );
+      }
+    }
+  }
+
+  // labels機能: key の書式・value長・件数上限は zod の Record<string,string> だけでは表現できないため、
+  // classify.rules.match.pattern の compile 検証と同じ流儀でここで検証し invalid_classify とする。
+  if (config?.classify?.labels) {
+    const { groups, tags } = config.classify.labels;
+    if (groups) {
+      const entries = Object.entries(groups);
+      if (entries.length > 20) {
+        throw badRequest('invalid_classify', 'classify.labels.groups accepts at most 20 entries');
+      }
+      for (const [key, heading] of entries) {
+        if (!/^[a-z0-9_-]{1,64}$/.test(key)) {
+          throw badRequest('invalid_classify', `classify.labels.groups key is invalid: ${key}`);
+        }
+        if (heading.length < 1 || heading.length > 20) {
+          throw badRequest('invalid_classify', `classify.labels.groups value must be 1..20 chars (key=${key})`);
+        }
+      }
+    }
+    if (tags) {
+      const entries = Object.entries(tags);
+      if (entries.length > 50) {
+        throw badRequest('invalid_classify', 'classify.labels.tags accepts at most 50 entries');
+      }
+      for (const [key, value] of entries) {
+        if (!TAG_PATTERN.test(key)) {
+          throw badRequest('invalid_classify', `classify.labels.tags key is invalid: ${key}`);
+        }
+        if (value.length < 1 || value.length > 40) {
+          throw badRequest('invalid_classify', `classify.labels.tags value must be 1..40 chars (key=${key})`);
+        }
       }
     }
   }

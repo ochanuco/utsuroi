@@ -834,6 +834,7 @@ describe('POST /api/sources: config (ADR-0019 classify)', () => {
   const validClassifySerialized = {
     rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉|樟葉', flags: null } }],
     default_tag: 'area:other',
+    labels: null,
   };
 
   it('creates an rss source with a classify-only config (201) and echoes it back', async () => {
@@ -1094,6 +1095,166 @@ describe('POST /api/sources: config (ADR-0019 classify)', () => {
 
     const updatedClassify = {
       rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉', flags: 'i' } }],
+    };
+    const res = await app.request(
+      `/api/sources/${created.id}`,
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ config: { classify: updatedClassify } }) },
+      testEnv()
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.config.classify).toEqual({ ...updatedClassify, default_tag: null, labels: null });
+  });
+});
+
+// labels機能: Discord通知のタグ行に使う日本語ラベル (classify.labels)。
+describe('POST /api/sources: config (classify.labels)', () => {
+  const classifyWithLabels = {
+    rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉|樟葉' } }],
+    default_tag: 'area:other',
+    labels: {
+      groups: { area: 'エリア' },
+      tags: { 'area:kuzuha': 'くずは', 'area:other': 'その他' },
+    },
+  };
+  const classifyWithLabelsSerialized = {
+    rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉|樟葉', flags: null } }],
+    default_tag: 'area:other',
+    labels: {
+      groups: { area: 'エリア' },
+      tags: { 'area:kuzuha': 'くずは', 'area:other': 'その他' },
+    },
+  };
+
+  it('creates an rss source with classify.labels (201) and round-trips it', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'rss',
+          url: 'https://example.com/labels.xml',
+          config: { classify: classifyWithLabels },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.config.classify).toEqual(classifyWithLabelsSerialized);
+  });
+
+  it('rejects a bad group key (400 invalid_classify)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'rss',
+          url: 'https://example.com/bad-group-key.xml',
+          config: {
+            classify: {
+              rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: 'x' } }],
+              labels: { groups: { 'Area Code!': 'エリア' } },
+            },
+          },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error.code).toBe('invalid_classify');
+  });
+
+  it('rejects a too-long label value (400 invalid_classify)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'rss',
+          url: 'https://example.com/too-long-label.xml',
+          config: {
+            classify: {
+              rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: 'x' } }],
+              labels: { groups: { area: '*'.repeat(21) } },
+            },
+          },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error.code).toBe('invalid_classify');
+  });
+
+  it('rejects a bad tags key (400 invalid_classify)', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+
+    const res = await app.request(
+      '/api/sources',
+      {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          site_id: site.id,
+          type: 'rss',
+          url: 'https://example.com/bad-tags-key.xml',
+          config: {
+            classify: {
+              rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: 'x' } }],
+              labels: { tags: { 'Bad Tag': 'くずは' } },
+            },
+          },
+        }),
+      },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error.code).toBe('invalid_classify');
+  });
+
+  it('updates classify.labels via PATCH and round-trips it', async () => {
+    const { app } = buildTestApp();
+    const site = await makeSite();
+    const created = (
+      await (
+        await app.request(
+          '/api/sources',
+          {
+            method: 'POST',
+            headers: jsonHeaders(),
+            body: JSON.stringify({
+              site_id: site.id,
+              type: 'rss',
+              url: 'https://example.com/patch-labels.xml',
+              config: { classify: classifyWithLabels },
+            }),
+          },
+          testEnv()
+        )
+      ).json()
+    ) as any;
+
+    const updatedClassify = {
+      rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉', flags: 'i' } }],
+      labels: { groups: { area: '地域' }, tags: { 'area:kuzuha': '楠葉' } },
     };
     const res = await app.request(
       `/api/sources/${created.id}`,

@@ -3,13 +3,17 @@
  * wave2 (src/notify/, Lane E) がこの createD1NotifyStore() の戻り値だけを利用する。
  */
 import type { ChangeKind, SourceType } from '../shared/types';
-import type { ChangeSummary, NotifyStore, PendingDelivery } from '../shared/contracts';
+import type { ChangeSummary, NotifyStore, PendingDelivery, TagLine } from '../shared/contracts';
 import { markDeliveryDelivered, markDeliveryFailed } from './deliveries';
+import type { SourceConfig } from './types';
 import { decryptWebhookUrl } from './webhookCrypto';
-import { nowIso, wasWritten } from './util';
+import { nowIso, parseJson, wasWritten } from './util';
 
 /** claimed_at から this 経過していれば 'sending' のまま止まった claim を stale とみなし再取得可とする */
 const CLAIM_STALE_MS = 5 * 60 * 1000;
+
+/** classify.labels.groups に見出しが無いグループ (またはグループ自体が未設定) に使う既定見出し */
+const DEFAULT_GROUP_HEADING = '分類';
 
 interface PendingDeliveryQueryRow {
   delivery_id: string;
@@ -27,6 +31,47 @@ interface PendingDeliveryQueryRow {
   title: string | null;
   detected_at: string;
   diff_preview: string | null;
+  change_tags: string | null;
+  source_config: string | null;
+}
+
+/**
+ * Change のタグを classify.labels (ADR-0019 labels機能) で解決し、Discord embed に載せる
+ * グループ別の表示行へ変換する。discord.ts は純粋なフォーマッタに留めるため、DB から読める
+ * classify.labels を使う解決ロジックはここ (データを読み出す側) に置く。
+ *
+ * - グループ化は各タグの先頭コロン前 (prefix) で行う (コロンが無いタグは group key '')。
+ * - グループの出現順は tags 内での初出順、各グループ内の値順はタグの並び順を維持する。
+ * - heading は labels.groups[prefix] ?? '分類'、value は labels.tags[tag] ?? tag (生値)。
+ * - tags が null または空配列なら空配列を返す (表示行なし)。
+ */
+/** `constructor` など Object.prototype 由来のキーを表示名として拾わないよう、自身のキーだけを引く */
+function ownLabel(map: Record<string, string> | undefined, key: string): string | undefined {
+  return map && Object.hasOwn(map, key) ? map[key] : undefined;
+}
+
+export function resolveTagLines(
+  tags: string[] | null,
+  labels: NonNullable<SourceConfig['classify']>['labels'],
+): TagLine[] {
+  if (!tags || tags.length === 0) return [];
+
+  const order: string[] = [];
+  const valuesByGroup = new Map<string, string[]>();
+  for (const tag of tags) {
+    const sep = tag.indexOf(':');
+    const groupKey = sep === -1 ? '' : tag.slice(0, sep);
+    if (!valuesByGroup.has(groupKey)) {
+      valuesByGroup.set(groupKey, []);
+      order.push(groupKey);
+    }
+    valuesByGroup.get(groupKey)!.push(ownLabel(labels?.tags, tag) ?? tag);
+  }
+
+  return order.map((groupKey) => ({
+    heading: ownLabel(labels?.groups, groupKey) ?? DEFAULT_GROUP_HEADING,
+    values: valuesByGroup.get(groupKey)!,
+  }));
 }
 
 /**
@@ -88,7 +133,9 @@ export function createD1NotifyStore(db: D1Database, webhookEncKey: string | unde
              c.title AS title,
              c.detected_at AS detected_at,
              c.diff_preview AS diff_preview,
+             c.tags AS change_tags,
              src.type AS source_type,
+             src.config AS source_config,
              s.name AS site_name
            FROM deliveries d
            JOIN destinations dest ON dest.id = d.destination_id
@@ -115,6 +162,13 @@ export function createD1NotifyStore(db: D1Database, webhookEncKey: string | unde
 
       const webhookUrl = await decryptWebhookUrl(row.webhook_url, webhookEncKey);
 
+      // labels機能 (ADR-0019): Change のタグを Source の classify.labels で解決し、
+      // Discord embed 用のグループ別表示行を組み立てる。Source に classify (または labels) が
+      // 未設定なら labels は undefined になり、resolveTagLines は生タグのままの表示行を返す。
+      const tags = parseJson<string[] | null>(row.change_tags, null);
+      const sourceConfig = parseJson<SourceConfig | null>(row.source_config, null);
+      const tagLines = resolveTagLines(tags, sourceConfig?.classify?.labels);
+
       const change: ChangeSummary = {
         changeId: row.change_id,
         kind: row.kind,
@@ -125,6 +179,8 @@ export function createD1NotifyStore(db: D1Database, webhookEncKey: string | unde
         title: row.title,
         detectedAt: row.detected_at,
         diffPreview: row.diff_preview,
+        tags,
+        tagLines,
       };
 
       return {

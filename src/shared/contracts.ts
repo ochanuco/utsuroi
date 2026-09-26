@@ -173,6 +173,14 @@ export interface NotifyQueueMessage {
   deliveryId: string;
 }
 
+/** classify.labels (ADR-0019 labels機能) で解決した、Discord embed に載せる1グループ分のタグ行 */
+export interface TagLine {
+  /** 見出し (classify.labels.groups[prefix] ?? '分類') */
+  heading: string;
+  /** そのグループに属するタグの表示値 (タグ順、classify.labels.tags[tag] ?? tag) */
+  values: string[];
+}
+
 export interface ChangeSummary {
   changeId: string;
   kind: ChangeKind;
@@ -184,6 +192,14 @@ export interface ChangeSummary {
   detectedAt: string; // ISO 8601
   /** 通知に載せる差分プレビュー (切り詰め済み) */
   diffPreview: string | null;
+  /**
+   * Classify段 (ADR-0019) が付けたタグ。null=未分類、[]=分類済みでタグ無し。
+   * optional にしているのは既存のテストヘルパー (makeChange 等) が構築するオブジェクトへの
+   * 影響を避けるため。実運用パス (src/db/notifyStore.ts) は必ず値を設定する。
+   */
+  tags?: string[] | null;
+  /** tags を classify.labels で解決したグループ別表示行 (labels機能)。未設定/空なら表示しない */
+  tagLines?: TagLine[];
 }
 
 export interface PendingDelivery {
