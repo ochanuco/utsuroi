@@ -34,7 +34,6 @@ import { extractItems } from '../normalize/extractItems';
 import { extractCharsetFromContentType } from '../normalize';
 import type { FeedItem, FetchSuccess } from '../shared/contracts';
 import { createSnapshot, type TargetRow } from '../db';
-import { bodyKey, putIfAbsent } from './r2';
 import { processFeedItems } from './feed';
 import type { CheckContext } from './types';
 
@@ -51,8 +50,10 @@ export async function processPageItems(
   outcome: FetchSuccess,
   body: Uint8Array,
 ): Promise<void> {
+  // 生本文は R2 に保存しない。前回比較は D1 のアイテムで行い本文を読み返さないうえ、
+  // 一覧ページは取得ごとに HTML が変わり content-addressed dedupe が効かず、毎チェック
+  // 丸ごと 1 オブジェクト増えるため。
   const rawHash = await sha256Hex(body);
-  await putIfAbsent(ctx.env.BODIES, bodyKey(rawHash), body);
 
   const extractConfig = ctx.source.config?.extract;
   if (!extractConfig) {
@@ -118,6 +119,6 @@ export async function processPageItems(
     etag: outcome.etag,
     lastModified: outcome.lastModified,
     bodyHash: rawHash,
-    r2Key: bodyKey(rawHash),
+    r2Key: null,
   });
 }
