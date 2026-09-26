@@ -4,6 +4,7 @@
  * src/pipeline/pageItems.ts の processPageItems に到達し、CSSセレクタで切り出したアイテムの
  * 実URLを processFeedItems (feed.ts) 経由で new/updated 検知・通知することを検証する。
  */
+import { env } from 'cloudflare:test';
 import { describe, expect, it, vi } from 'vitest';
 import { runMonitorCheck } from '../../src/pipeline/runCheck';
 import type { Env } from '../../src/shared/env';
@@ -13,6 +14,7 @@ import {
   listSnapshotsByMonitor,
   listTargetsByMonitor,
 } from '../../src/db';
+import { bodyKey } from '../../src/pipeline/r2';
 import { buildPipelineFixture, db, fakeEnv, grantingLimiter, routedFetch } from './helpers';
 
 const ROBOTS_ALLOW: [string, () => Response] = [
@@ -71,6 +73,11 @@ describe('runMonitorCheck: page item extraction (ADR-0011) baseline', () => {
     const snapshots = await listSnapshotsByMonitor(db(), monitor.id);
     expect(snapshots).toHaveLength(1);
     expect(snapshots[0]?.normalizedHash).toBeNull();
+
+    // 生本文は R2 に保存しない (読み返す経路が無く、一覧 HTML は毎回変わり dedupe が効かないため)。
+    expect(snapshots[0]?.bodyHash).toBeTruthy();
+    expect(snapshots[0]?.r2Key).toBeNull();
+    expect(await env.BODIES.head(bodyKey(snapshots[0]!.bodyHash!))).toBeNull();
   });
 });
 
