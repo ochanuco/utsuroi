@@ -81,6 +81,7 @@ RFC 9309に基づいてrobots.txtを評価する。禁止時は後続Fetcherへ�
 | Change Event | 変更または新着を表す不変イベント |
 | Destination | Discord Webhook等の通知先 |
 | Subscription | EventをDestinationへ配送する規則 |
+| Tag | Change Eventに付く分類ラベル。Subscriptionが宛先の選択に使う |
 | Policy Stop | robots.txt等により自動再試行を行わず停止した状態 |
 
 ## 6. 対応Source
