@@ -9,6 +9,8 @@ import {
   createSource,
   listAuditEventsBySubject,
   policyStopMonitor,
+  setMonitorLastChecked,
+  setMonitorNextRun,
   upsertTarget,
 } from '../../src/db';
 import { authHeaders, buildTestApp, createFakeMonitorControlFactory, db, jsonHeaders, testEnv, uniqueName } from './helpers';
@@ -93,6 +95,199 @@ describe('POST/GET /api/monitors', () => {
     const { app } = buildTestApp();
     const res = await app.request('/api/monitors', { headers: authHeaders() }, testEnv());
     expect(res.status).toBe(400);
+  });
+});
+
+describe('PATCH /api/monitors/:id', () => {
+  it('updates interval_seconds and records a monitor.update audit event', async () => {
+    const { app } = buildTestApp();
+    const { source } = await makeSiteAndSource();
+    const monitor = await (
+      await app.request(
+        '/api/monitors',
+        { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ source_id: source.id, interval_seconds: 60 }) },
+        testEnv()
+      )
+    ).json() as any;
+
+    const res = await app.request(
+      `/api/monitors/${monitor.id}`,
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ interval_seconds: 120 }) },
+      testEnv()
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.interval_seconds).toBe(120);
+
+    const events = await listAuditEventsBySubject(db(), monitor.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ action: 'monitor.update', actor: 'admin', subject: monitor.id });
+    expect(events[0]!.payload).toMatchObject({ from: 60, to: 120, rescheduledTo: null });
+  });
+
+  it('returns 404 for an unknown monitor id', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request(
+      '/api/monitors/nope',
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ interval_seconds: 120 }) },
+      testEnv()
+    );
+    expect(res.status).toBe(404);
+    const body = await res.json() as any;
+    expect(body.error.code).toBe('monitor_not_found');
+  });
+
+  it.each([
+    ['below the minimum', { interval_seconds: 59 }],
+    ['above the maximum', { interval_seconds: 604801 }],
+    ['non-integer', { interval_seconds: 60.5 }],
+    ['missing', {}],
+    ['unknown key', { interval_seconds: 120, extra: 'nope' }],
+  ])('rejects %s interval_seconds with 400', async (_label, payload) => {
+    const { app } = buildTestApp();
+    const { source } = await makeSiteAndSource();
+    const monitor = await (
+      await app.request(
+        '/api/monitors',
+        { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ source_id: source.id, interval_seconds: 60 }) },
+        testEnv()
+      )
+    ).json() as any;
+
+    const res = await app.request(
+      `/api/monitors/${monitor.id}`,
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify(payload) },
+      testEnv()
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json() as any;
+    expect(body.error.code).toBe('validation_error');
+  });
+
+  it('no reschedule when lastCheckedAt is null even for an active monitor', async () => {
+    const fake = createFakeMonitorControlFactory();
+    const { app } = buildTestApp({ monitorControlFactory: fake.factory });
+    const { source } = await makeSiteAndSource();
+    const futureNextRun = new Date(Date.now() + 3600_000).toISOString();
+    const monitor = await (
+      await app.request(
+        '/api/monitors',
+        {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({ source_id: source.id, interval_seconds: 3600, next_run_at: futureNextRun }),
+        },
+        testEnv()
+      )
+    ).json() as any;
+
+    const res = await app.request(
+      `/api/monitors/${monitor.id}`,
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ interval_seconds: 60 }) },
+      testEnv()
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.next_run_at).toBe(futureNextRun);
+    expect(fake.state.scheduled.has(monitor.id)).toBe(false);
+  });
+
+  it('shorter interval on an active monitor moves next_run_at earlier and calls control.schedule, clamped to now when the candidate is in the past', async () => {
+    const fake = createFakeMonitorControlFactory();
+    const { app } = buildTestApp({ monitorControlFactory: fake.factory });
+    const { source } = await makeSiteAndSource();
+    const monitor = await (
+      await app.request(
+        '/api/monitors',
+        { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ source_id: source.id, interval_seconds: 3600 }) },
+        testEnv()
+      )
+    ).json() as any;
+
+    const lastCheckedAt = new Date(Date.now() - 3600_000).toISOString(); // 1時間前
+    await setMonitorLastChecked(db(), monitor.id, lastCheckedAt);
+    await setMonitorNextRun(db(), monitor.id, new Date(Date.now() + 3600_000).toISOString());
+
+    const beforePatch = Date.now();
+    const res = await app.request(
+      `/api/monitors/${monitor.id}`,
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ interval_seconds: 60 }) },
+      testEnv()
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+
+    // candidate = lastCheckedAt + 60s は現在時刻より過去なので now にクランプされる
+    const nextRunMs = new Date(body.next_run_at).getTime();
+    expect(nextRunMs).toBeGreaterThanOrEqual(beforePatch);
+    expect(nextRunMs).toBeLessThanOrEqual(Date.now());
+
+    expect(fake.state.scheduled.get(monitor.id)).toBe(body.next_run_at);
+
+    const events = await listAuditEventsBySubject(db(), monitor.id);
+    expect(events[0]!.payload).toMatchObject({ from: 3600, to: 60, rescheduledTo: body.next_run_at });
+  });
+
+  it('longer interval leaves next_run_at unchanged and does not call control.schedule', async () => {
+    const fake = createFakeMonitorControlFactory();
+    const { app } = buildTestApp({ monitorControlFactory: fake.factory });
+    const { source } = await makeSiteAndSource();
+    const monitor = await (
+      await app.request(
+        '/api/monitors',
+        { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ source_id: source.id, interval_seconds: 60 }) },
+        testEnv()
+      )
+    ).json() as any;
+
+    const lastCheckedAt = new Date(Date.now() - 10_000).toISOString(); // 10秒前
+    const nextRunAt = new Date(Date.now() + 50_000).toISOString(); // 50秒後 (まだ先)
+    await setMonitorLastChecked(db(), monitor.id, lastCheckedAt);
+    await setMonitorNextRun(db(), monitor.id, nextRunAt);
+
+    const res = await app.request(
+      `/api/monitors/${monitor.id}`,
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ interval_seconds: 3600 }) },
+      testEnv()
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.next_run_at).toBe(nextRunAt);
+    expect(fake.state.scheduled.has(monitor.id)).toBe(false);
+
+    const events = await listAuditEventsBySubject(db(), monitor.id);
+    expect(events[0]!.payload).toMatchObject({ from: 60, to: 3600, rescheduledTo: null });
+  });
+
+  it('paused monitor: interval updated but schedule/next_run_at untouched', async () => {
+    const fake = createFakeMonitorControlFactory();
+    const { app } = buildTestApp({ monitorControlFactory: fake.factory });
+    const { source } = await makeSiteAndSource();
+    const monitor = await (
+      await app.request(
+        '/api/monitors',
+        { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ source_id: source.id, interval_seconds: 60 }) },
+        testEnv()
+      )
+    ).json() as any;
+
+    const lastCheckedAt = new Date(Date.now() - 3600_000).toISOString();
+    const nextRunAt = new Date(Date.now() + 3600_000).toISOString();
+    await setMonitorLastChecked(db(), monitor.id, lastCheckedAt);
+    await setMonitorNextRun(db(), monitor.id, nextRunAt);
+
+    await app.request(`/api/monitors/${monitor.id}/pause`, { method: 'POST', headers: authHeaders() }, testEnv());
+
+    const res = await app.request(
+      `/api/monitors/${monitor.id}`,
+      { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ interval_seconds: 60 * 5 }) },
+      testEnv()
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.interval_seconds).toBe(300);
+    expect(body.next_run_at).toBe(nextRunAt);
+    expect(fake.state.scheduled.has(monitor.id)).toBe(false);
   });
 });
 
