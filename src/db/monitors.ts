@@ -101,6 +101,19 @@ export async function policyStopMonitor(
     .run();
 }
 
+/** PATCH /api/monitors/:id: interval_seconds のみを更新する (next_run_at/status は呼び出し側が別途扱う) */
+export async function updateMonitorInterval(
+  db: D1Database,
+  id: string,
+  intervalSeconds: number
+): Promise<void> {
+  const now = nowIso();
+  await db
+    .prepare(`UPDATE monitors SET interval_seconds = ?, updated_at = ? WHERE id = ?`)
+    .bind(intervalSeconds, now, id)
+    .run();
+}
+
 export async function setMonitorNextRun(
   db: D1Database,
   id: string,

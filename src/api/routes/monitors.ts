@@ -14,6 +14,8 @@ import {
   listCheckJobsByMonitor,
   listMonitorsBySite,
   recordAuditEvent,
+  setMonitorNextRun,
+  updateMonitorInterval,
   updateMonitorStatus,
 } from '../../db';
 import { createDefaultMonitorControlFactory } from '../monitorControl';
@@ -26,6 +28,16 @@ const createMonitorSchema = z.object({
   interval_seconds: z.number().int().positive(),
   next_run_at: z.string().nullable().optional(),
 });
+
+/** interval_seconds の許容範囲: 60秒 (1分) 〜 604800秒 (7日) */
+const MIN_INTERVAL_SECONDS = 60;
+const MAX_INTERVAL_SECONDS = 604800;
+
+// PATCH /api/monitors/:id は interval_seconds のみを更新する単一フィールドPATCH
+// (destinations.update_thread_id と同じ形)。
+const updateMonitorSchema = z.object({
+  interval_seconds: z.number().int().min(MIN_INTERVAL_SECONDS).max(MAX_INTERVAL_SECONDS),
+}).strict();
 
 export interface MonitorsRoutesOptions {
   monitorControlFactory?: (env: Env) => MonitorControlFactory;
@@ -73,6 +85,47 @@ export function monitorsRoutes(opts: MonitorsRoutesOptions = {}) {
     const loaded = await loadMonitorWithRobots(c.env.DB, c.req.param('id'));
     if (!loaded) throw notFound('monitor_not_found', 'monitor not found');
     return c.json(serializeMonitor(loaded.monitor, loaded.robotsEvaluation));
+  });
+
+  router.patch('/:id', async (c) => {
+    const monitorId = c.req.param('id');
+    const monitor = await getMonitor(c.env.DB, monitorId);
+    if (!monitor) throw notFound('monitor_not_found', 'monitor not found');
+
+    const body = parseWith(updateMonitorSchema, await readJsonBody(c));
+    const oldInterval = monitor.intervalSeconds;
+    const newInterval = body.interval_seconds;
+
+    await updateMonitorInterval(c.env.DB, monitorId, newInterval);
+
+    // 前倒しの再スケジュールは稼働中 (active) かつ直近チェック実績がある場合のみ判定する。
+    // pause/policy-stop中のmonitorや初回未実行のmonitorは interval のみ更新し、
+    // next_run_at/Alarmには触れない (次回稼働開始・初回実行時に自然に反映されるため)。
+    let rescheduledTo: string | null = null;
+    if (monitor.status === 'active' && monitor.lastCheckedAt !== null) {
+      const now = Date.now();
+      const lastCheckedAtMs = new Date(monitor.lastCheckedAt).getTime();
+      const candidateMs = Math.max(now, lastCheckedAtMs + newInterval * 1000);
+      const currentNextRunMs = monitor.nextRunAt ? new Date(monitor.nextRunAt).getTime() : null;
+
+      if (currentNextRunMs === null || candidateMs < currentNextRunMs) {
+        const candidateIso = new Date(candidateMs).toISOString();
+        await setMonitorNextRun(c.env.DB, monitorId, candidateIso);
+        const control = resolveFactory(c.env)(monitorId);
+        await control.schedule(candidateIso);
+        rescheduledTo = candidateIso;
+      }
+    }
+
+    await recordAuditEvent(c.env.DB, {
+      actor: 'admin',
+      action: 'monitor.update',
+      subject: monitorId,
+      payload: { from: oldInterval, to: newInterval, rescheduledTo },
+    });
+
+    const updated = await getMonitor(c.env.DB, monitorId);
+    return c.json(serializeMonitor(updated!));
   });
 
   router.get('/:id/jobs', async (c) => {
