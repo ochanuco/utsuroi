@@ -128,13 +128,13 @@ describe('buildDiscordPayload', () => {
         makeChange({
           kind: 'updated',
           tagLines: [
-            { heading: 'エリア', values: ['くずは', '市駅周辺'] },
+            { heading: 'エリア', values: ['北エリア', '駅前'] },
             { heading: '話題', values: ['賃貸'] },
           ],
         }),
       ) as { embeds: Array<{ description: string }> };
       const description = payload.embeds[0]!.description;
-      expect(description).toContain('**エリア**: くずは、市駅周辺');
+      expect(description).toContain('**エリア**: 北エリア、駅前');
       expect(description).toContain('**話題**: 賃貸');
 
       const kindIdx = description.indexOf('**種別**');

@@ -19,9 +19,9 @@ type ClassifyConfig = NonNullable<SourceConfig['classify']>;
 describe('computeTags: pure matcher', () => {
   it('matches the title field', () => {
     const config: ClassifyConfig = {
-      rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉|樟葉' } }],
+      rules: [{ tag: 'area:north', match: { field: 'title', pattern: '北町|北台' } }],
     };
-    expect(computeTags(config, { title: '楠葉の新着物件', url: null, summary: null })).toEqual(['area:kuzuha']);
+    expect(computeTags(config, { title: '北町の新着物件', url: null, summary: null })).toEqual(['area:north']);
     expect(computeTags(config, { title: '他のエリアの物件', url: null, summary: null })).toEqual([]);
   });
 
@@ -47,15 +47,15 @@ describe('computeTags: pure matcher', () => {
 
   it('matches an extracted field by name (ADR-0013 extract.fields)', () => {
     const config: ClassifyConfig = {
-      rules: [{ tag: 'area:kuzuha', match: { field: '所在地', pattern: '楠葉|樟葉' } }],
+      rules: [{ tag: 'area:north', match: { field: '所在地', pattern: '北町|北台' } }],
     };
-    const input = { title: null, url: null, summary: null, fields: [{ name: '所在地', value: '大阪府枚方市楠葉' }] };
-    expect(computeTags(config, input)).toEqual(['area:kuzuha']);
+    const input = { title: null, url: null, summary: null, fields: [{ name: '所在地', value: '〇〇県〇〇市北町' }] };
+    expect(computeTags(config, input)).toEqual(['area:north']);
   });
 
   it('treats a missing field as no match (does not throw)', () => {
     const config: ClassifyConfig = {
-      rules: [{ tag: 'area:kuzuha', match: { field: '所在地', pattern: '楠葉' } }],
+      rules: [{ tag: 'area:north', match: { field: '所在地', pattern: '北町' } }],
     };
     expect(computeTags(config, { title: null, url: null, summary: null })).toEqual([]);
   });
@@ -70,19 +70,19 @@ describe('computeTags: pure matcher', () => {
   it('applies multiple rules and dedupes tags, preserving rule order', () => {
     const config: ClassifyConfig = {
       rules: [
-        { tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉' } },
+        { tag: 'area:north', match: { field: 'title', pattern: '北町' } },
         { tag: 'topic:sale', match: { field: 'title', pattern: '売却' } },
         // 同じ tag を別ルールから再度付与しても1回だけ (dedupe)
-        { tag: 'area:kuzuha', match: { field: 'summary', pattern: '枚方' } },
+        { tag: 'area:north', match: { field: 'summary', pattern: '市内' } },
       ],
     };
-    const input = { title: '楠葉の売却物件', url: null, summary: '枚方市内' };
-    expect(computeTags(config, input)).toEqual(['area:kuzuha', 'topic:sale']);
+    const input = { title: '北町の売却物件', url: null, summary: '市内' };
+    expect(computeTags(config, input)).toEqual(['area:north', 'topic:sale']);
   });
 
   it('falls back to default_tag when no rule matches', () => {
     const config: ClassifyConfig = {
-      rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉' } }],
+      rules: [{ tag: 'area:north', match: { field: 'title', pattern: '北町' } }],
       defaultTag: 'area:other',
     };
     expect(computeTags(config, { title: '無関係のタイトル', url: null, summary: null })).toEqual(['area:other']);
@@ -102,7 +102,7 @@ describe('computeTags: pure matcher', () => {
 
   it('returns an empty array when no rule matches and no default_tag is set', () => {
     const config: ClassifyConfig = {
-      rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉' } }],
+      rules: [{ tag: 'area:north', match: { field: 'title', pattern: '北町' } }],
     };
     expect(computeTags(config, { title: '無関係のタイトル', url: null, summary: null })).toEqual([]);
   });
@@ -139,7 +139,7 @@ describe('classifyDetectedChanges: unit-level (DetectedChange 直接操作)', ()
     const detected = await makeDetected(monitor.id, {
       stableKey: 'a',
       url: 'https://example.com/a',
-      title: '楠葉の物件',
+      title: '北町の物件',
       publishedAt: null,
       updatedAt: null,
       summary: null,
@@ -153,7 +153,7 @@ describe('classifyDetectedChanges: unit-level (DetectedChange 直接操作)', ()
 
   it('prefers the (possibly enriched) row.title over item.title for the title field', async () => {
     const classify: ClassifyConfig = {
-      rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉' } }],
+      rules: [{ tag: 'area:north', match: { field: 'title', pattern: '北町' } }],
     };
     const { monitor, source, site } = await buildPipelineFixture({
       sourceType: 'rss',
@@ -168,16 +168,16 @@ describe('classifyDetectedChanges: unit-level (DetectedChange 直接操作)', ()
       summary: null,
     });
     // enrichTitle 段が row.title を書き換えた状態を模す。
-    detected.row.title = '楠葉の物件（enrich後）';
+    detected.row.title = '北町の物件（enrich後）';
 
     await classifyDetectedChanges(buildCtx(monitor, source, site), [detected]);
 
-    expect(detected.row.tags).toEqual(['area:kuzuha']);
+    expect(detected.row.tags).toEqual(['area:north']);
   });
 
   it('does not reclassify a Change whose tags are already set (retry keeps the original routing)', async () => {
     const classify: ClassifyConfig = {
-      rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉' } }],
+      rules: [{ tag: 'area:north', match: { field: 'title', pattern: '北町' } }],
     };
     const { monitor, source, site } = await buildPipelineFixture({
       sourceType: 'rss',
@@ -186,7 +186,7 @@ describe('classifyDetectedChanges: unit-level (DetectedChange 直接操作)', ()
     const detected = await makeDetected(monitor.id, {
       stableKey: 'c',
       url: 'https://example.com/c',
-      title: '楠葉の物件', // ルールに一致する内容だが、既に別のタグで分類済みとする
+      title: '北町の物件', // ルールに一致する内容だが、既に別のタグで分類済みとする
       publishedAt: null,
       updatedAt: null,
       summary: null,
@@ -205,7 +205,7 @@ describe('classifyDetectedChanges: unit-level (DetectedChange 直接操作)', ()
       rules: [
         // API層のバリデーションを経由しない直接テストなので、不正なパターンを注入できる。
         { tag: 'broken', match: { field: 'title', pattern: '(' } },
-        { tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉' } },
+        { tag: 'area:north', match: { field: 'title', pattern: '北町' } },
       ],
     } as unknown as ClassifyConfig;
     const { monitor, source, site } = await buildPipelineFixture({
@@ -215,14 +215,14 @@ describe('classifyDetectedChanges: unit-level (DetectedChange 直接操作)', ()
     const detected = await makeDetected(monitor.id, {
       stableKey: 'd',
       url: 'https://example.com/d',
-      title: '楠葉の物件',
+      title: '北町の物件',
       publishedAt: null,
       updatedAt: null,
       summary: null,
     });
 
     await expect(classifyDetectedChanges(buildCtx(monitor, source, site), [detected])).resolves.toBeUndefined();
-    expect(detected.row.tags).toEqual(['area:kuzuha']);
+    expect(detected.row.tags).toEqual(['area:north']);
   });
 });
 
@@ -243,7 +243,7 @@ describe('processFeedItems: Classify段の統合 (ADR-0019)', () => {
 
   it('stores tags on a newly-detected Change when the source has a classify config', async () => {
     const classify: ClassifyConfig = {
-      rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉' } }],
+      rules: [{ tag: 'area:north', match: { field: 'title', pattern: '北町' } }],
       defaultTag: 'area:other',
     };
     const { monitor, source, site } = await buildPipelineFixture({
@@ -257,7 +257,7 @@ describe('processFeedItems: Classify段の統合 (ADR-0019)', () => {
     const item: FeedItem = {
       stableKey: 'https://example.com/classify-new/1',
       url: 'https://example.com/classify-new/1',
-      title: '楠葉の新着物件',
+      title: '北町の新着物件',
       publishedAt: null,
       updatedAt: null,
       summary: null,
@@ -267,7 +267,7 @@ describe('processFeedItems: Classify段の統合 (ADR-0019)', () => {
     const changes = await listChangesByMonitor(db(), monitor.id);
     expect(changes).toHaveLength(1);
     expect(changes[0]?.kind).toBe('new');
-    expect(changes[0]?.tags).toEqual(['area:kuzuha']);
+    expect(changes[0]?.tags).toEqual(['area:north']);
   });
 
   it('leaves tags NULL when the source has no classify config', async () => {
@@ -280,7 +280,7 @@ describe('processFeedItems: Classify段の統合 (ADR-0019)', () => {
     const item: FeedItem = {
       stableKey: 'https://example.com/no-classify/1',
       url: 'https://example.com/no-classify/1',
-      title: '楠葉の新着物件',
+      title: '北町の新着物件',
       publishedAt: null,
       updatedAt: null,
       summary: null,
@@ -294,7 +294,7 @@ describe('processFeedItems: Classify段の統合 (ADR-0019)', () => {
 
   it('does not reclassify a pre-existing Change recovered via dedupeKey conflict (inserted:false, tags already set)', async () => {
     const classify: ClassifyConfig = {
-      rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉' } }],
+      rules: [{ tag: 'area:north', match: { field: 'title', pattern: '北町' } }],
     };
     const { monitor, source, site } = await buildPipelineFixture({
       sourceType: 'rss',
@@ -306,7 +306,7 @@ describe('processFeedItems: Classify段の統合 (ADR-0019)', () => {
     const item: FeedItem = {
       stableKey: 'retry-key-tagged',
       url: 'https://example.com/classify-retry-tagged/1',
-      title: '楠葉の新着物件', // classify config と一致する内容だが、既に別タグで分類済みとする
+      title: '北町の新着物件', // classify config と一致する内容だが、既に別タグで分類済みとする
       publishedAt: null,
       updatedAt: null,
       summary: null,
@@ -332,7 +332,7 @@ describe('processFeedItems: Classify段の統合 (ADR-0019)', () => {
 
   it('classifies a pre-existing Change recovered via dedupeKey conflict when its tags are still NULL', async () => {
     const classify: ClassifyConfig = {
-      rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉' } }],
+      rules: [{ tag: 'area:north', match: { field: 'title', pattern: '北町' } }],
     };
     const { monitor, source, site } = await buildPipelineFixture({
       sourceType: 'rss',
@@ -344,7 +344,7 @@ describe('processFeedItems: Classify段の統合 (ADR-0019)', () => {
     const item: FeedItem = {
       stableKey: 'retry-key-untagged',
       url: 'https://example.com/classify-retry-untagged/1',
-      title: '楠葉の新着物件',
+      title: '北町の新着物件',
       publishedAt: null,
       updatedAt: null,
       summary: null,
@@ -362,7 +362,7 @@ describe('processFeedItems: Classify段の統合 (ADR-0019)', () => {
     await processFeedItems(buildCtx(nonBaselineMonitor, source, site), [item]);
 
     const persisted = await getChange(db(), preExisting.row.id);
-    expect(persisted?.tags).toEqual(['area:kuzuha']);
+    expect(persisted?.tags).toEqual(['area:north']);
     expect(await listChangesByMonitor(db(), monitor.id)).toHaveLength(1);
   });
 });

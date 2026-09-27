@@ -86,7 +86,7 @@ describe('listMatchingSubscriptions: tag matching (ADR-0019)', () => {
       siteId: site.id,
       monitorId: monitor.id,
       kind: 'new',
-      tags: ['area:kuzuha'],
+      tags: ['area:north'],
     });
     expect(withTags).toHaveLength(1);
   });
@@ -98,14 +98,14 @@ describe('listMatchingSubscriptions: tag matching (ADR-0019)', () => {
       destinationId: destination.id,
       siteId: site.id,
       monitorId: monitor.id,
-      tag: 'area:kuzuha',
+      tag: 'area:north',
     });
 
     const matching = await listMatchingSubscriptions(d, {
       siteId: site.id,
       monitorId: monitor.id,
       kind: 'new',
-      tags: ['area:kuzuha'],
+      tags: ['area:north'],
     });
     expect(matching).toHaveLength(1);
 
@@ -128,7 +128,7 @@ describe('listMatchingSubscriptions: tag matching (ADR-0019)', () => {
       name: 'Other Discord',
       webhookUrl: 'https://discord.com/api/webhooks/multi-tag',
     });
-    await createSubscription(d, { destinationId: destination.id, siteId: site.id, monitorId: monitor.id, tag: 'area:kuzuha' });
+    await createSubscription(d, { destinationId: destination.id, siteId: site.id, monitorId: monitor.id, tag: 'area:north' });
     await createSubscription(d, {
       destinationId: otherDestination.id,
       siteId: site.id,
@@ -140,7 +140,7 @@ describe('listMatchingSubscriptions: tag matching (ADR-0019)', () => {
       siteId: site.id,
       monitorId: monitor.id,
       kind: 'new',
-      tags: ['area:kuzuha', 'topic:sale'],
+      tags: ['area:north', 'topic:sale'],
     });
     expect(matches.map((s) => s.destinationId).sort()).toEqual([destination.id, otherDestination.id].sort());
   });
@@ -148,17 +148,17 @@ describe('listMatchingSubscriptions: tag matching (ADR-0019)', () => {
   it('does not create a duplicate delivery when two matching subscriptions point to the same destination', async () => {
     const d = db();
     const { destination, site, monitor, target } = await buildFixture(d);
-    // 同じ destination を複数の tag で購読する構成 (例: "area:kuzuha" と "area:other" の両方を
+    // 同じ destination を複数の tag で購読する構成 (例: "area:north" と "area:other" の両方を
     // 同じチャンネルへ流したい場合)。fanout はこの destination へ2回 createDeliveryIfNew を
     // 呼ぶことになるが、UNIQUE(change_id, destination_id) により2件目は inserted:false になる。
-    await createSubscription(d, { destinationId: destination.id, siteId: site.id, monitorId: monitor.id, tag: 'area:kuzuha' });
+    await createSubscription(d, { destinationId: destination.id, siteId: site.id, monitorId: monitor.id, tag: 'area:north' });
     await createSubscription(d, { destinationId: destination.id, siteId: site.id, monitorId: monitor.id, tag: 'topic:sale' });
 
     const matches = await listMatchingSubscriptions(d, {
       siteId: site.id,
       monitorId: monitor.id,
       kind: 'new',
-      tags: ['area:kuzuha', 'topic:sale'],
+      tags: ['area:north', 'topic:sale'],
     });
     expect(matches).toHaveLength(2);
 
