@@ -826,13 +826,13 @@ describe('DELETE /api/sources/:id (Site/Source/Monitor削除機能)', () => {
 // のときのみ、sitemap/sitemap-index は sitemap_mode==='traverse' のときのみ受け付ける。
 describe('POST /api/sources: config (ADR-0019 classify)', () => {
   const validClassify = {
-    rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉|樟葉' } }],
+    rules: [{ tag: 'area:north', match: { field: 'title', pattern: '北町|北台' } }],
     default_tag: 'area:other',
   };
   // serializeSource は match.flags を null passthrough で埋める (他 config キーと同じ流儀) ため、
   // 送信した config (flags 省略) とレスポンスの期待値は一致しない。比較用に別途定義する。
   const validClassifySerialized = {
-    rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉|樟葉', flags: null } }],
+    rules: [{ tag: 'area:north', match: { field: 'title', pattern: '北町|北台', flags: null } }],
     default_tag: 'area:other',
     labels: null,
   };
@@ -1025,7 +1025,7 @@ describe('POST /api/sources: config (ADR-0019 classify)', () => {
 
     const invalidConfigs = [
       { rules: [{ tag: 'Area:Kuzuha', match: { field: 'title', pattern: 'x' } }] }, // uppercase not allowed
-      { rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: 'x' } }], default_tag: 'Bad Tag' },
+      { rules: [{ tag: 'area:north', match: { field: 'title', pattern: 'x' } }], default_tag: 'Bad Tag' },
     ];
     for (const classify of invalidConfigs) {
       const res = await app.request(
@@ -1094,7 +1094,7 @@ describe('POST /api/sources: config (ADR-0019 classify)', () => {
     ) as any;
 
     const updatedClassify = {
-      rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉', flags: 'i' } }],
+      rules: [{ tag: 'area:north', match: { field: 'title', pattern: '北町', flags: 'i' } }],
     };
     const res = await app.request(
       `/api/sources/${created.id}`,
@@ -1110,19 +1110,19 @@ describe('POST /api/sources: config (ADR-0019 classify)', () => {
 // labels機能: Discord通知のタグ行に使う日本語ラベル (classify.labels)。
 describe('POST /api/sources: config (classify.labels)', () => {
   const classifyWithLabels = {
-    rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉|樟葉' } }],
+    rules: [{ tag: 'area:north', match: { field: 'title', pattern: '北町|北台' } }],
     default_tag: 'area:other',
     labels: {
       groups: { area: 'エリア' },
-      tags: { 'area:kuzuha': 'くずは', 'area:other': 'その他' },
+      tags: { 'area:north': '北エリア', 'area:other': 'その他' },
     },
   };
   const classifyWithLabelsSerialized = {
-    rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉|樟葉', flags: null } }],
+    rules: [{ tag: 'area:north', match: { field: 'title', pattern: '北町|北台', flags: null } }],
     default_tag: 'area:other',
     labels: {
       groups: { area: 'エリア' },
-      tags: { 'area:kuzuha': 'くずは', 'area:other': 'その他' },
+      tags: { 'area:north': '北エリア', 'area:other': 'その他' },
     },
   };
 
@@ -1164,7 +1164,7 @@ describe('POST /api/sources: config (classify.labels)', () => {
           url: 'https://example.com/bad-group-key.xml',
           config: {
             classify: {
-              rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: 'x' } }],
+              rules: [{ tag: 'area:north', match: { field: 'title', pattern: 'x' } }],
               labels: { groups: { 'Area Code!': 'エリア' } },
             },
           },
@@ -1191,7 +1191,7 @@ describe('POST /api/sources: config (classify.labels)', () => {
           url: 'https://example.com/too-long-label.xml',
           config: {
             classify: {
-              rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: 'x' } }],
+              rules: [{ tag: 'area:north', match: { field: 'title', pattern: 'x' } }],
               labels: { groups: { area: '*'.repeat(21) } },
             },
           },
@@ -1218,8 +1218,8 @@ describe('POST /api/sources: config (classify.labels)', () => {
           url: 'https://example.com/bad-tags-key.xml',
           config: {
             classify: {
-              rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: 'x' } }],
-              labels: { tags: { 'Bad Tag': 'くずは' } },
+              rules: [{ tag: 'area:north', match: { field: 'title', pattern: 'x' } }],
+              labels: { tags: { 'Bad Tag': '北エリア' } },
             },
           },
         }),
@@ -1253,8 +1253,8 @@ describe('POST /api/sources: config (classify.labels)', () => {
     ) as any;
 
     const updatedClassify = {
-      rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: '楠葉', flags: 'i' } }],
-      labels: { groups: { area: '地域' }, tags: { 'area:kuzuha': '楠葉' } },
+      rules: [{ tag: 'area:north', match: { field: 'title', pattern: '北町', flags: 'i' } }],
+      labels: { groups: { area: '地域' }, tags: { 'area:north': '北町' } },
     };
     const res = await app.request(
       `/api/sources/${created.id}`,

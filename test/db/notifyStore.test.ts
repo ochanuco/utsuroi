@@ -211,13 +211,13 @@ describe('createD1NotifyStore (implements src/shared/contracts.ts NotifyStore)',
 // labels機能 (ADR-0019): resolveTagLines のグループ化・ラベル解決ロジック単体テスト。
 describe('resolveTagLines', () => {
   it('maps a tag to its labeled value', () => {
-    const lines = resolveTagLines(['area:kuzuha'], { tags: { 'area:kuzuha': 'くずは' } });
-    expect(lines).toEqual([{ heading: '分類', values: ['くずは'] }]);
+    const lines = resolveTagLines(['area:north'], { tags: { 'area:north': '北エリア' } });
+    expect(lines).toEqual([{ heading: '分類', values: ['北エリア'] }]);
   });
 
   it('falls back to the raw tag when no label is mapped', () => {
-    const lines = resolveTagLines(['area:kuzuha'], { tags: {} });
-    expect(lines).toEqual([{ heading: '分類', values: ['area:kuzuha'] }]);
+    const lines = resolveTagLines(['area:north'], { tags: {} });
+    expect(lines).toEqual([{ heading: '分類', values: ['area:north'] }]);
   });
 
   it('ignores Object.prototype keys such as constructor', () => {
@@ -226,23 +226,23 @@ describe('resolveTagLines', () => {
   });
 
   it('falls back to 分類 when the group has no heading mapped', () => {
-    const lines = resolveTagLines(['area:kuzuha'], { groups: {}, tags: { 'area:kuzuha': 'くずは' } });
+    const lines = resolveTagLines(['area:north'], { groups: {}, tags: { 'area:north': '北エリア' } });
     expect(lines[0]!.heading).toBe('分類');
   });
 
   it('uses the mapped group heading when present', () => {
-    const lines = resolveTagLines(['area:kuzuha'], { groups: { area: 'エリア' }, tags: { 'area:kuzuha': 'くずは' } });
+    const lines = resolveTagLines(['area:north'], { groups: { area: 'エリア' }, tags: { 'area:north': '北エリア' } });
     expect(lines[0]!.heading).toBe('エリア');
   });
 
   it('orders groups by first appearance and preserves per-group value order', () => {
     const lines = resolveTagLines(
-      ['topic:rent', 'area:kuzuha', 'area:central', 'topic:sale'],
+      ['topic:rent', 'area:north', 'area:station', 'topic:sale'],
       {
         groups: { area: 'エリア', topic: '話題' },
         tags: {
-          'area:kuzuha': 'くずは',
-          'area:central': '市駅周辺',
+          'area:north': '北エリア',
+          'area:station': '駅前',
           'topic:rent': '賃貸',
           'topic:sale': '売買',
         },
@@ -250,7 +250,7 @@ describe('resolveTagLines', () => {
     );
     expect(lines).toEqual([
       { heading: '話題', values: ['賃貸', '売買'] },
-      { heading: 'エリア', values: ['くずは', '市駅周辺'] },
+      { heading: 'エリア', values: ['北エリア', '駅前'] },
     ]);
   });
 
@@ -277,10 +277,10 @@ describe('getPendingDelivery: tags / tagLines (labels機能)', () => {
 
     const site = await createSite(d, { name: 'Labels Site' });
     const classify: NonNullable<SourceConfig['classify']> = {
-      rules: [{ tag: 'area:kuzuha', match: { field: 'title', pattern: 'x' } }],
+      rules: [{ tag: 'area:north', match: { field: 'title', pattern: 'x' } }],
       labels: {
         groups: { area: 'エリア' },
-        tags: { 'area:kuzuha': 'くずは', 'area:other': 'その他' },
+        tags: { 'area:north': '北エリア', 'area:other': 'その他' },
       },
     };
     const source = await createSource(d, {
@@ -305,12 +305,12 @@ describe('getPendingDelivery: tags / tagLines (labels機能)', () => {
       kind: 'new',
       dedupeKey: 'sha256:notify-labels-1',
     });
-    await setChangeTagsIfNull(d, change.row.id, ['area:kuzuha', 'area:other']);
+    await setChangeTagsIfNull(d, change.row.id, ['area:north', 'area:other']);
     const delivery = await createDeliveryIfNew(d, change.row.id, destination.id);
 
     const pending = await store.getPendingDelivery(delivery.row.id);
-    expect(pending?.change.tags).toEqual(['area:kuzuha', 'area:other']);
-    expect(pending?.change.tagLines).toEqual([{ heading: 'エリア', values: ['くずは', 'その他'] }]);
+    expect(pending?.change.tags).toEqual(['area:north', 'area:other']);
+    expect(pending?.change.tagLines).toEqual([{ heading: 'エリア', values: ['北エリア', 'その他'] }]);
   });
 
   it('has no tag lines when the source has no classify config', async () => {

@@ -120,13 +120,13 @@ describe('POST/GET/DELETE /api/subscriptions', () => {
       {
         method: 'POST',
         headers: jsonHeaders(),
-        body: JSON.stringify({ destination_id: destination.id, tag: 'area:kuzuha' }),
+        body: JSON.stringify({ destination_id: destination.id, tag: 'area:north' }),
       },
       testEnv()
     );
     expect(res.status).toBe(201);
     const body = (await res.json()) as any;
-    expect(body.tag).toBe('area:kuzuha');
+    expect(body.tag).toBe('area:north');
   });
 
   it('accepts a null tag as a wildcard', async () => {

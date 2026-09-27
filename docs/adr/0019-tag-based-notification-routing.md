@@ -10,7 +10,7 @@
 
 このため、内容で宛先を分けたい場合は Source を分けるしかない。SUUMO は町丁目コード (`oz`) ごとに
 検索URLを分けた 14 Source で監視しているが、宛先はすべて同じで、分割の目的は検索条件の絞り込みに
-すぎない。ひらつーのように1本のフィードに市内全域の記事が混ざる Source では、「くずはの記事だけ
+すぎない。ひらつーのように1本のフィードに市内全域の記事が混ざる Source では、「特定エリアの記事だけ
 別スレッドへ」のような振り分けがそもそも表現できない。
 
 一方で、振り分けに必要な材料は揃いつつある。
@@ -31,7 +31,7 @@ Discord 側は Webhook のままで足りる。チャンネルの振り分けは
 
 ### 1. Change にタグを付け、Subscription.tag で宛先を選ぶ
 
-- Change は0個以上のタグ (例: `area:kuzuha`, `topic:non-local`) を持つ。
+- Change は0個以上のタグ (例: `area:north`, `topic:non-local`) を持つ。
 - ファンアウトの一致条件に `subscriptions.tag` を加える。
   - `tag IS NULL` は従来どおりワイルドカードで、タグに関係なくすべての Change に一致する。
     既存の Subscription の挙動は変わらない。
@@ -49,9 +49,9 @@ Discord 側は Webhook のままで足りる。チャンネルの振り分けは
   "classify": {
     "rules": [
       // 決定論ルール: title / url / summary / fields.<name> を正規表現で照合
-      { "tag": "area:kuzuha", "match": { "field": "所在地", "pattern": "楠葉|樟葉" } },
+      { "tag": "area:north", "match": { "field": "所在地", "pattern": "北町|北台" } },
       // jev ルール: 質問の答えに対する閾値条件
-      { "tag": "area:kuzuha", "jev": { "question": "area", "choice": "kuzuha", "min": 0.6 } },
+      { "tag": "area:north", "jev": { "question": "area", "choice": "north", "min": 0.6 } },
       { "tag": "topic:non-local", "jev": { "question": "location_bound", "noul_max": 0.5 } }
     ],
     "jev_questions": { /* typesafe/jev の questions をそのまま保持 */ },
