@@ -1,0 +1,80 @@
+name: Deploy GCP Executor
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'executors/gcp-http/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-gcp-executor
+  cancel-in-progress: false
+
+env:
+  PROJECT: chanukott
+  REGION: asia-northeast1
+  SERVICE: utsuroi-gcp-http
+  IMAGE_BASE: asia-northeast1-docker.pkg.dev/chanukott/utsuroi/gcp-http
+
+jobs:
+  deploy:
+    # workflow_dispatch を他ブランチから実行しても本番へはデプロイしない。
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: executors/gcp-http/package-lock.json
+
+      - name: Test
+        working-directory: executors/gcp-http
+        run: |
+          npm ci
+          npm test
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: projects/75594630387/locations/global/workloadIdentityPools/github/providers/utsuroi
+          service_account: utsuroi-deploy@chanukott.iam.gserviceaccount.com
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker asia-northeast1-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        env:
+          IMAGE: ${{ env.IMAGE_BASE }}:${{ github.sha }}
+        run: |
+          docker build --tag "$IMAGE" executors/gcp-http
+          docker push "$IMAGE"
+
+      - name: Deploy to Cloud Run
+        env:
+          IMAGE: ${{ env.IMAGE_BASE }}:${{ github.sha }}
+        run: |
+          # PEM は改行を含むため --set-env-vars ではなく env-vars-file (JSON は YAML のサブセット) で渡す。
+          jq -Rs '{EXECUTOR_PUBLIC_KEY: .}' executors/gcp-http/public-key.pem > "$RUNNER_TEMP/executor-env.json"
+          gcloud run deploy "$SERVICE" \
+            --image "$IMAGE" \
+            --region "$REGION" \
+            --project "$PROJECT" \
+            --service-account utsuroi-run@chanukott.iam.gserviceaccount.com \
+            --allow-unauthenticated \
+            --ingress all \
+            --concurrency 8 \
+            --max-instances 3 \
+            --memory 512Mi \
+            --timeout 60 \
+            --env-vars-file "$RUNNER_TEMP/executor-env.json" \
+            --quiet

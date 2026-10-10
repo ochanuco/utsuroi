@@ -14,3 +14,8 @@ export type {
 
 export { httpFetch } from './http';
 export type { HttpFetchOptions } from './http';
+
+export { defaultFetcherRegistry, runFetcher } from './registry';
+export type { FetcherImplementation, FetcherInvocation, FetcherRegistry } from './registry';
+export { gcpHttpFetch } from './gcpHttp';
+export { signExecutorToken } from './executorToken';

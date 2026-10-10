@@ -19,4 +19,14 @@ export interface Env {
    * 未設定時は destination 作成 API を 503 で拒否する (平文フォールバックはしない)。
    */
   WEBHOOK_ENC_KEY?: string;
+  /**
+   * GCP Executor (Cloud Run, fetcher 'gcp-http') のエンドポイント URL。空の間は gcp-http が
+   * internal_error を返す (ADR-0021)。
+   */
+  GCP_EXECUTOR_URL?: string;
+  /**
+   * GCP Executor へのリクエストに署名する Ed25519 秘密鍵 (wrangler secret, PKCS8 PEM)。
+   * 公開鍵は Cloud Run 側の EXECUTOR_PUBLIC_KEY と対になる。
+   */
+  GCP_EXECUTOR_SIGNING_KEY?: string;
 }

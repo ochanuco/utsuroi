@@ -213,7 +213,9 @@ order_list:
 - version
 - maintenance状態
 
-Runnerは自律スケジュールを持たず、Cloudflare側から発行された署名付きジョブのみ実行する。
+Home Runnerはpull型とする。自律スケジュールを持たず、Cloudflare側が発行した署名付きジョブをlease取得し、heartbeatで生存を報告して実行する（ADR-0021）。
+
+Cloud Run上のGCP Executorはpush型とし、CrawlerObjectの対象外とする。Workerが署名付きリクエストを直接送り、同期的に結果を受け取る。
 
 ## 12. 正規化と差分
 
@@ -282,6 +284,8 @@ Runnerは自律スケジュールを持たず、Cloudflare側から発行され�
 - loopback、link-local、private、metadata endpointを既定拒否する。
 - DNS rebindingを考慮して接続時にも解決結果を検証する。
 - 外部Runnerとの通信はmTLSまたは短寿命署名トークンを使用する。
+- GCP Executorへのリクエストは、Workerが秘密鍵で署名した短寿命（60秒以内）のEdDSA JWTで認可する。JWTはリクエストボディのSHA-256（`bh`）に束縛する。Cloud Run側は公開鍵だけを持ち、署名・`iss`・`aud`・`exp`・`bh`を検証して不一致は401とする（ADR-0021）。
+- GCP Executorは公開エンドポイントで動くため、Worker側の検査に頼らず自身でSSRF検査を行う。httpとhttpsの80/443のみ許可し、リダイレクトの各ホップでDNSを解決してprivate、loopback、link-local、metadata宛を拒否し、検証済みアドレスへ接続を固定する。
 - Webhook URL、Cookie等はSecretsまたは暗号化済み参照として管理する。
 - CAPTCHAやアクセス制御を回避する機能は実装しない。
 
@@ -293,6 +297,7 @@ Runnerは自律スケジュールを持たず、Cloudflare側から発行され�
 - HTTP Fetch
 - Cloudflare Browser
 - Home Runner
+- GCP Executor（Cloud Run、push型）
 - Site単位Fetcher AllowList / OrderList
 - HostObjectによるrate limit
 - MonitorObject Alarm
@@ -304,7 +309,6 @@ Runnerは自律スケジュールを持たず、Cloudflare側から発行され�
 
 ### MVP後
 
-- Cloud Run Runner
 - 地域別Cloudflare Executor
 - Cookieを伴うBrowser Session
 - semantic change classification
@@ -330,6 +334,5 @@ Runnerは自律スケジュールを持たず、Cloudflare側から発行され�
 
 - WorkflowsをMVP必須とするか。
 - QueueをCheck実行にも使用するか。
-- 外部Runnerのjob deliveryをpull型にするかpush型にするか。
 - Browser SessionをHostObjectとCrawlerObjectのどちらへ関連付けるか。
 - semantic判定モデルとコスト上限。
