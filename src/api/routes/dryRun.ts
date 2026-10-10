@@ -8,11 +8,15 @@
  * フェッチ → デコード → title抽出) だが、2点だけ意図的に異なる:
  *  - robots が disallow でもフェッチを続行し、判定は結果に載せて返すだけ (ADR-0018)。
  *  - robots キャッシュを渡さない。毎回 robots.txt を実際に取りに行き、いま現在の状態を返す。
+ * fetcher_id を指定したときだけ、そのFetcher単体で取得する (Fetcher Policy は使わない)。
  * SSRF 検査だけはセキュリティ境界なので従来どおり強制する (拒否時は 400)。
  */
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { httpFetch } from '../../fetch';
+import { defaultFetcherRegistry, httpFetch, runFetcher } from '../../fetch';
+import { PULL_FETCHER_IDS } from '../../fetch/registry';
+import { LEASE_WAIT_MS, RESULT_WAIT_MS } from '../../do/crawlerObject';
+import { listFetchers } from '../../db';
 import { checkUrlForSsrf, resolveAndCheck } from '../../net';
 import { checkRobots } from '../../robots';
 import { extractCharsetFromContentType } from '../../normalize';
@@ -25,6 +29,8 @@ import { parseWith, readJsonBody } from '../http';
 
 const dryRunSchema = z.object({
   url: z.string().url(),
+  /** 省略時は Worker 内の httpFetch。指定時はそのFetcher単体で取得する (ADR-0018 追記) */
+  fetcher_id: z.string().min(1).optional(),
 });
 
 /** レスポンスが HTML と判定できる content-type か (enrichTitle.ts と同じ判定) */
@@ -46,6 +52,17 @@ export function dryRunRoutes(opts: { ssrfResolver?: DnsResolver; fetchImpl?: typ
     }
     const origin = parsed.origin;
 
+    // fetchers マスタに無い id は sites の fetcher-policy と同じく 400 にする
+    if (body.fetcher_id) {
+      const known = (await listFetchers(c.env.DB)).map((f) => f.id);
+      if (!known.includes(body.fetcher_id)) {
+        throw badRequest(
+          'unknown_fetcher',
+          `未登録のFetcher ID: ${body.fetcher_id} (利用可能: ${known.join(', ') || 'なし'})`,
+        );
+      }
+    }
+
     // SSRF はポリシーではなく境界なので DryRun でも強制する
     const staticCheck = checkUrlForSsrf(body.url);
     if (!staticCheck.allowed) {
@@ -65,10 +82,27 @@ export function dryRunRoutes(opts: { ssrfResolver?: DnsResolver; fetchImpl?: typ
       userAgent: c.env.USER_AGENT,
     });
 
-    const outcome = await httpFetch(
-      { url: body.url, userAgent: c.env.USER_AGENT },
-      { fetch: opts.fetchImpl, urlGuard: checkUrlForSsrf },
-    );
+    // Fetcher Policy は使わず、明示指定された単一Fetcherだけを実行する。
+    // jobRef は渡さない (executor_job_id の記録先である check_attempts を作らないため)。
+    const outcome = body.fetcher_id
+      ? await runFetcher(defaultFetcherRegistry, body.fetcher_id, {
+          url: body.url,
+          userAgent: c.env.USER_AGENT,
+          etag: null,
+          lastModified: null,
+          env: c.env,
+          fetchImpl: opts.fetchImpl,
+          urlGuard: checkUrlForSsrf,
+          ssrfResolver: opts.ssrfResolver,
+          // lease 待ち + 結果待ちの合計を既定の約50秒に収める
+          submitLimits: PULL_FETCHER_IDS.has(body.fetcher_id)
+            ? { leaseWaitMs: LEASE_WAIT_MS, resultWaitMs: RESULT_WAIT_MS }
+            : undefined,
+        })
+      : await httpFetch(
+          { url: body.url, userAgent: c.env.USER_AGENT },
+          { fetch: opts.fetchImpl, urlGuard: checkUrlForSsrf },
+        );
 
     let title: string | null = null;
     let titleSkipReason: string | null = null;
@@ -101,6 +135,7 @@ export function dryRunRoutes(opts: { ssrfResolver?: DnsResolver; fetchImpl?: typ
       fetch: outcome.ok
         ? {
             ok: true,
+            fetcher_id: body.fetcher_id ?? null,
             status: outcome.status,
             final_url: outcome.finalUrl,
             content_type: outcome.contentType,
@@ -110,6 +145,7 @@ export function dryRunRoutes(opts: { ssrfResolver?: DnsResolver; fetchImpl?: typ
           }
         : {
             ok: false,
+            fetcher_id: body.fetcher_id ?? null,
             status: outcome.status,
             final_url: null,
             content_type: null,

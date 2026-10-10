@@ -82,3 +82,25 @@ policy が引けず、DryRun に多段フォールバックは要らないため
   DryRun 以外のルートはこれを使っていない。
 - レート制限は設けていない。管理者しか叩けず手動操作である前提。将来この前提が崩れるなら
   HostObject 経由のレート制限を検討する。
+
+## 追記 (2026-10-11): Fetcher を明示指定できる
+
+DryRun は引き続き Fetcher Policy を使わない。そのうえで、リクエストに任意の `fetcher_id` を
+加え、指定した単一の Fetcher で取得できるようにする。`gcp-http` や `home-http` を Site の
+Fetcher Policy に載せる前に、その経路で実際にページが取れるかを確かめるため。
+
+- 省略時は従来どおり Worker 内の `httpFetch` で取得する。レスポンスの `fetch.fetcher_id` は `null`。
+- 指定時は `runFetcher(defaultFetcherRegistry, id, ...)` で、その Fetcher だけを1回実行する。
+  `runFetchSequence` による多段フォールバックやリトライはしない。
+- `fetchers` マスタに無い id は 400 `unknown_fetcher` (Site の Fetcher Policy 更新と同じ)。
+- 取得の URL 検査は check パイプラインと同じ `checkUrlForSsrf` を `urlGuard` に渡す。SSRF が
+  境界である点は変わらない。
+- pull 型 (`PULL_FETCHER_IDS`) は CrawlerObject の既定の待ち (lease 10 秒 + 結果 40 秒、
+  `LEASE_WAIT_MS` / `RESULT_WAIT_MS`) を明示して渡し、合計を約 50 秒に収める。Runner 不在などは
+  `fetch.failure_class = executor_unavailable` として 200 で返す。
+- D1 への書き込みが無い点は変わらない。`check_attempts` は作らず、`jobRef` も渡さない。pull 型は
+  CrawlerObject 自身の SQLite storage に job を積むが、D1 の行は作らない (読み取りは
+  `executors` の maintenance 状態のみ)。
+- robots.txt の確認は Fetcher を指定しても Worker から行う。
+- UI は Fetcher の `<select>` (既定は「既定 (Worker 内)」、選択肢は `GET /api/fetchers`) を持ち、
+  結果に使用した Fetcher を表示する。

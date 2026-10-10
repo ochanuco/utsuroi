@@ -7,6 +7,8 @@ import { api } from '../api.js';
 import { registerRoute } from '../router.js';
 import { el, clear, section, field, formatDateTime, renderLoading, renderError } from '../util.js';
 
+const DEFAULT_FETCHER_LABEL = '既定 (Worker 内)';
+
 /** dl に「項目 / 値」を1行足す。value は文字列またはノード */
 function addRow(dl, key, value) {
   dl.appendChild(el('dt', { text: key }));
@@ -55,6 +57,7 @@ function renderRobots(robots) {
 
 function renderFetch(fetchResult) {
   const dl = el('dl');
+  addRow(dl, 'Fetcher', fetchResult.fetcher_id ?? DEFAULT_FETCHER_LABEL);
   if (fetchResult.ok) {
     addRow(dl, 'HTTPステータス', String(fetchResult.status));
     addRow(dl, '最終URL', fetchResult.final_url ?? '—');
@@ -89,13 +92,25 @@ async function dryRunView(container) {
     el('p', {
       text:
         'URLを1本だけ試し撃ちして、robots.txt の判定とページの <title> を確認します。' +
-        'DBには何も保存されません。robots.txt が禁止でもタイトルの取得は続行し、判定は結果に表示します。',
+        'DBには何も保存されません。Fetcher を選ぶと、Site の Fetcher Policy を使わずそのFetcher単体で取得します (robots.txt の確認は常に Worker から行います)。robots.txt が禁止でもタイトルの取得は続行し、判定は結果に表示します。',
     })
   );
 
   const urlInput = el('input', {
     attrs: { type: 'url', required: true, placeholder: 'https://example.com/page' },
   });
+  const fetcherSelect = el('select');
+  fetcherSelect.appendChild(el('option', { attrs: { value: '' }, text: DEFAULT_FETCHER_LABEL }));
+  api
+    .get('/fetchers')
+    .then((res) => {
+      for (const f of res.items) {
+        fetcherSelect.appendChild(el('option', { attrs: { value: f.id }, text: f.id }));
+      }
+    })
+    .catch(() => {
+      // 一覧が取れなくても既定の取得は使える
+    });
   const submitButton = el('button', { attrs: { type: 'submit' }, text: '実行' });
   const formError = el('p', { class: 'error hidden' });
   const resultEl = el('div');
@@ -112,11 +127,20 @@ async function dryRunView(container) {
           return;
         }
 
+        const fetcherId = fetcherSelect.value;
         submitButton.disabled = true;
-        clear(resultEl);
+        fetcherSelect.disabled = true;
         renderLoading(resultEl);
+        if (fetcherId === 'home-http') {
+          resultEl.appendChild(
+            el('p', {
+              text: `${fetcherId} で取得中です。Runner の応答待ちで最大50秒ほどかかります。このままお待ちください。`,
+            })
+          );
+        }
         try {
-          const result = await api.post('/dry-run', { url });
+          const payload = fetcherId ? { url, fetcher_id: fetcherId } : { url };
+          const result = await api.post('/dry-run', payload);
           clear(resultEl);
           resultEl.appendChild(renderRobots(result.robots));
           resultEl.appendChild(renderFetch(result.fetch));
@@ -126,11 +150,13 @@ async function dryRunView(container) {
           renderError(resultEl, err);
         } finally {
           submitButton.disabled = false;
+          fetcherSelect.disabled = false;
         }
       },
     },
   });
   form.appendChild(field('URL', urlInput));
+  form.appendChild(field('Fetcher', fetcherSelect));
   form.appendChild(submitButton);
   form.appendChild(formError);
 
