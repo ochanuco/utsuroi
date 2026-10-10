@@ -7,7 +7,7 @@ import { loadConfig } from '../src/config.ts';
 import { createHealthServer } from '../src/health.ts';
 import { Runner } from '../src/runner.ts';
 import type { RunnerOptions } from '../src/runner.ts';
-import { captureLogs, job, permissiveFetchService, startFakeTarget, startFakeWorker, TOKEN_SECRET, waitFor } from './helpers.ts';
+import { captureLogs, closeServer, job, permissiveFetchService, startFakeTarget, startFakeWorker, TOKEN_SECRET, waitFor } from './helpers.ts';
 import type { FakeTarget, FakeWorker } from './helpers.ts';
 
 const fixture = (name: string): any => JSON.parse(readFileSync(new URL(`../../../test/fixtures/runner-protocol/${name}.json`, import.meta.url), 'utf8'));
@@ -236,7 +236,13 @@ test('healthz reflects recent contact with the Worker', async () => {
   const server = createHealthServer(() => runner.isHealthy());
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as import('node:net').AddressInfo).port;
-  const status = async () => (await fetch(`http://127.0.0.1:${port}/healthz`)).status;
+  // 本文を読み切らないと接続が残り、サーバーを閉じてもプロセスが終了しない
+  const get = async (path: string) => {
+    const res = await fetch(`http://127.0.0.1:${port}${path}`);
+    await res.arrayBuffer();
+    return res.status;
+  };
+  const status = () => get('/healthz');
   try {
     assert.equal(await status(), 503);
     runner.start();
@@ -244,10 +250,10 @@ test('healthz reflects recent contact with the Worker', async () => {
     assert.equal(await status(), 200);
     now += 61_000;
     assert.equal(await status(), 503);
-    assert.equal((await fetch(`http://127.0.0.1:${port}/other`)).status, 404);
+    assert.equal(await get('/other'), 404);
   } finally {
     await runner.stop();
-    server.close();
+    await closeServer(server);
   }
 });
 
