@@ -33,6 +33,15 @@ const HEALTHY_WINDOW_MS = 60_000;
 // lease の期限直前に取得を始めても結果を受け付けてもらえないため、結果送信の分を残す
 const LEASE_SAFETY_MARGIN_MS = 3_000;
 
+/** サーバーのスキーマ上限 (名前256文字、値8192文字、200件) に収まらないヘッダは落とす */
+function fitHeaders(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (name.length <= 256 && value.length <= 8192 && Object.keys(out).length < 200) out[name] = value;
+  }
+  return out;
+}
+
 export class Runner {
   readonly runnerId: string;
   private readonly o: RunnerOptions;
@@ -230,14 +239,14 @@ export class Runner {
         kind: 'response',
         status: fetched.status,
         url: fetched.url,
-        contentType: fetched.contentType,
-        headers: fetched.headers,
+        contentType: fetched.contentType === null ? null : fetched.contentType.slice(0, 1024),
+        headers: fitHeaders(fetched.headers),
         body: fetched.body.toString('base64'),
         truncated: fetched.truncated,
         durationMs: this.now() - startedAt,
       };
     } catch (err) {
-      if (err instanceof FetchFailure) result = { kind: 'error', failureClass: err.failureClass, message: err.message };
+      if (err instanceof FetchFailure) result = { kind: 'error', failureClass: err.failureClass, message: err.message.slice(0, 1024) };
       else result = { kind: 'error', failureClass: 'network_error', message: 'unexpected fetch error' };
     }
     this.log('info', 'fetch finished', {

@@ -40,6 +40,15 @@ export interface ClientOptions {
 const DEFAULT_RESULT_RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000];
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 
+/** サーバーのエラー応答 `{"error":{"code":"..."}}` から code を取り出す */
+function errorCode(json: unknown): string | undefined {
+  if (typeof json !== 'object' || json === null) return undefined;
+  const error = (json as Record<string, unknown>).error;
+  if (typeof error !== 'object' || error === null) return undefined;
+  const code = (error as Record<string, unknown>).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
 export type ResultOutcome = ResultResponse | { rejected: 'lease_mismatch' | 'lease_expired' | 'not_found' | 'too_large' };
 
 export class RunnerClient {
@@ -113,7 +122,7 @@ export class RunnerClient {
         if (status === 404) return { rejected: 'not_found' };
         if (status === 413) return { rejected: 'too_large' };
         if (status === 409) {
-          const code = typeof json === 'object' && json !== null ? (json as Record<string, unknown>).error : undefined;
+          const code = errorCode(json);
           return { rejected: code === 'lease_expired' ? 'lease_expired' : 'lease_mismatch' };
         }
         if (status < 500) throw new HttpError(status);

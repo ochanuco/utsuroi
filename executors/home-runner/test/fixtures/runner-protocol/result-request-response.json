@@ -1,4 +1,0 @@
-{ "leaseToken": "dGVzdC1sZWFzZS10b2tlbi10ZXN0LWxlYXNlLXRva2Vu",
-  "result": { "kind": "response", "status": 200, "url": "https://example.com/feed.xml",
-              "contentType": "application/xml", "headers": { "content-type": "application/xml" },
-              "body": "PGZlZWQvPg==", "truncated": false, "durationMs": 812 } }

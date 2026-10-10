@@ -5,7 +5,7 @@ import { AuthError, HttpError, NetworkError, RunnerClient } from '../src/client.
 import { startFakeWorker, TOKEN_SECRET } from './helpers.ts';
 import type { FakeWorker } from './helpers.ts';
 
-const fixture = (name: string): any => JSON.parse(readFileSync(new URL(`./fixtures/runner-protocol/${name}.json`, import.meta.url), 'utf8'));
+const fixture = (name: string): any => JSON.parse(readFileSync(new URL(`../../../test/fixtures/runner-protocol/${name}.json`, import.meta.url), 'utf8'));
 
 let worker: FakeWorker;
 before(async () => {
@@ -41,7 +41,7 @@ test('sends access credentials and the protocol header on every call', async () 
 test('lease returns parsed jobs', async () => {
   worker.jobs.push(...fixture('lease-response').jobs);
   const res = await client().lease(fixture('lease-request'));
-  assert.equal(res.jobs[0]?.jobId, 'job-1');
+  assert.equal(res.jobs[0]?.jobId, fixture('lease-response').jobs[0].jobId);
 });
 
 test('treats 401, 403 and redirects as auth errors', async () => {
@@ -66,8 +66,8 @@ test('gives up after the retry budget', async () => {
 
 test('does not retry 409, 404 and 413', async () => {
   const cases: Array<[number, unknown, unknown]> = [
-    [409, { error: 'lease_mismatch' }, { rejected: 'lease_mismatch' }],
-    [409, { error: 'lease_expired' }, { rejected: 'lease_expired' }],
+    [409, { error: { code: 'lease_mismatch', message: 'x' } }, { rejected: 'lease_mismatch' }],
+    [409, { error: { code: 'lease_expired', message: 'x' } }, { rejected: 'lease_expired' }],
     [404, {}, { rejected: 'not_found' }],
     [413, {}, { rejected: 'too_large' }],
   ];

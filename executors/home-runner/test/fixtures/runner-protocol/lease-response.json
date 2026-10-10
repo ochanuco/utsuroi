@@ -1,6 +1,0 @@
-{ "jobs": [ {
-  "jobId": "job-1", "leaseToken": "dGVzdC1sZWFzZS10b2tlbi10ZXN0LWxlYXNlLXRva2Vu", "leaseExpiresAt": "2026-10-10T00:00:40.000Z",
-  "fetchMode": "http",
-  "request": { "url": "https://example.com/feed.xml", "maxBytes": 5242880,
-               "headers": { "user-agent": "utsuroi-test", "if-none-match": "\"abc\"" } }
-} ] }

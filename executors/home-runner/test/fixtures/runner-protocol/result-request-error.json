@@ -1,2 +1,0 @@
-{ "leaseToken": "dGVzdC1sZWFzZS10b2tlbi10ZXN0LWxlYXNlLXRva2Vu",
-  "result": { "kind": "error", "failureClass": "ssrf_blocked", "message": "resolved address not allowed" } }

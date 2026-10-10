@@ -51,7 +51,9 @@ export async function startFakeWorker(): Promise<FakeWorker> {
     if (path === '/api/runner/heartbeat') {
       send(200, { serverTime: new Date().toISOString(), maintenance: worker.maintenance });
     } else if (path === '/api/runner/lease') {
-      if (worker.jobs.length > 0) {
+      if (worker.maintenance) {
+        send(200, { jobs: [] });
+      } else if (worker.jobs.length > 0) {
         send(200, { jobs: worker.jobs.splice(0, body.max) });
       } else {
         const timer = setTimeout(() => send(200, { jobs: [] }), 100);

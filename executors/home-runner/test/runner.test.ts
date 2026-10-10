@@ -10,7 +10,7 @@ import type { RunnerOptions } from '../src/runner.ts';
 import { captureLogs, job, permissiveFetchService, startFakeTarget, startFakeWorker, TOKEN_SECRET, waitFor } from './helpers.ts';
 import type { FakeTarget, FakeWorker } from './helpers.ts';
 
-const fixture = (name: string): any => JSON.parse(readFileSync(new URL(`./fixtures/runner-protocol/${name}.json`, import.meta.url), 'utf8'));
+const fixture = (name: string): any => JSON.parse(readFileSync(new URL(`../../../test/fixtures/runner-protocol/${name}.json`, import.meta.url), 'utf8'));
 
 let worker: FakeWorker;
 let target: FakeTarget;
@@ -133,7 +133,7 @@ test('reports fetch failures as error results', async () => {
 
 test('does not retry results rejected with 409', async () => {
   const { runner, logs } = makeRunner();
-  worker.resultResponder = () => ({ status: 409, body: { error: 'lease_expired' } });
+  worker.resultResponder = () => ({ status: 409, body: { error: { code: 'lease_expired', message: 'x' } } });
   worker.jobs.push(job('late', target.url));
   runner.start();
   await waitFor(() => resultsFor('late').length === 1);
@@ -252,7 +252,7 @@ test('healthz reflects recent contact with the Worker', async () => {
 });
 
 test('protocol request fixtures match what the runner sends', async () => {
-  const { runner } = makeRunner({ runnerId: fixture('heartbeat-request').runnerId, version: '0123abc' });
+  const { runner } = makeRunner({ runnerId: fixture('heartbeat-request').runnerId, version: fixture('heartbeat-request').version });
   worker.jobs.length = 0;
   runner.start();
   await waitFor(() => worker.requests.some((r) => r.path === '/api/runner/lease') && worker.requests.some((r) => r.path === '/api/runner/heartbeat'));
