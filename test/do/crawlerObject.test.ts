@@ -253,6 +253,12 @@ describe('CrawlerObject submitAndWait / lease / complete', () => {
 });
 
 describe('CrawlerObject alarm / status', () => {
+  it('bounds the number of runner rows', async () => {
+    const { executorId, stub } = newExecutor();
+    for (let i = 0; i < 40; i++) await stub.heartbeat(runner(executorId, { runnerId: `r${i}` }));
+    expect((await stub.status()).runners.length).toBe(32);
+  });
+
   it('reports runners and aggregates, and treats a runner as offline after 60 seconds', async () => {
     const { executorId, stub } = newExecutor();
     const t0 = Date.now();

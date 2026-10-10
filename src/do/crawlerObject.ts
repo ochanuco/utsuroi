@@ -17,6 +17,8 @@ export const RESULT_WAIT_MS = 40_000;
 export const TERMINAL_RETENTION_MS = 60 * 60_000;
 export const RUNNER_RETENTION_MS = 24 * 60 * 60_000;
 const STATS_WINDOW_MS = 60 * 60_000;
+/** runnerId は Runner 申告値なので、行数を抑えて無制限に増えないようにする */
+const MAX_RUNNER_ROWS = 32;
 
 export type UnavailableReason = 'runner_offline' | 'maintenance' | 'lease_timeout' | 'result_timeout';
 
@@ -224,6 +226,10 @@ export class CrawlerObject extends DurableObject<Env> {
       info.version !== undefined ? 1 : 0,
       info.concurrency !== undefined ? 1 : 0,
       info.inflight !== undefined ? 1 : 0,
+    );
+    this.sql.exec(
+      `DELETE FROM runners WHERE runner_id IN (SELECT runner_id FROM runners ORDER BY last_seen DESC LIMIT -1 OFFSET ?)`,
+      MAX_RUNNER_ROWS,
     );
     this.checkTransition(now);
   }
@@ -499,4 +505,8 @@ export class CrawlerObject extends DurableObject<Env> {
     this.checkTransition(now);
     await this.scheduleAlarm();
   }
+}
+
+export function crawlerStub(env: Env, executorId: string): DurableObjectStub<CrawlerObject> {
+  return env.CRAWLER_DO.get(env.CRAWLER_DO.idFromName(executorId)) as unknown as DurableObjectStub<CrawlerObject>;
 }

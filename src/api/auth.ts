@@ -7,10 +7,11 @@
  */
 import type { MiddlewareHandler } from 'hono';
 import type { Env } from '../shared/env';
+import { isRunnerCaller } from './runnerAuth';
 
 export interface AppEnv {
   Bindings: Env;
-  Variables: { caller: string };
+  Variables: { caller: string; runnerExecutorId?: string };
 }
 
 const JWT_HEADER = 'cf-access-jwt-assertion';
@@ -170,6 +171,11 @@ export function createAccessAuth(opts: AccessAuthOptions = {}): MiddlewareHandle
         return c.json({ error: { code: err.code, message: err.message } }, err.status);
       }
       throw err;
+    }
+
+    // Runner のトークンは宅内ホストに置くため、漏洩しても管理 API を操作できないよう /api/runner/* に閉じ込める (ADR-0023 §4)
+    if (isRunnerCaller(c.get('caller'), c.env.RUNNER_EXECUTORS) && !c.req.path.startsWith('/api/runner/')) {
+      return c.json({ error: { code: 'forbidden', message: 'runner token is restricted to /api/runner/*' } }, 403);
     }
 
     if (MUTATING_METHODS.has(c.req.method)) {
