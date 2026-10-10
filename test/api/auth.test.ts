@@ -147,6 +147,19 @@ describe('Access JWT auth (all /api/*)', () => {
     spy.mockRestore();
   });
 
+  it('fetches the JWKS without following redirects and treats a redirect as unavailable', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const inits: (RequestInit | undefined)[] = [];
+    const redirecting = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      inits.push(init);
+      return new Response(null, { status: 302, headers: { location: 'https://example.com/certs' } });
+    }) as unknown as typeof fetch;
+    const token = await signJwt(testKeyPair, baseClaims({ email: 'a@example.com' }));
+    expect((await call(token, testEnv(), 'GET', redirecting)).status).toBe(503);
+    expect(inits[0]?.redirect).toBe('manual');
+    spy.mockRestore();
+  });
+
   it('caches the JWKS and refetches once on an unknown kid', async () => {
     const calls: string[] = [];
     const rotated = await generateKeyPair();
