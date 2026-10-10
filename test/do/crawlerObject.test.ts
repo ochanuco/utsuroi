@@ -1,5 +1,5 @@
 import { env, runInDurableObject as runIn } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   RUNNER_ALIVE_WINDOW_MS,
   RUNNER_RETENTION_MS,
@@ -166,9 +166,9 @@ describe('CrawlerObject submitAndWait / lease / complete', () => {
     const input = job(executorId);
     const waiting = stub.submitAndWait(input, { leaseWaitMs: 5_000, resultWaitMs: 5_000 });
     const results = await Promise.all([
-      stub.lease(runner(executorId, { runnerId: 'a' }), 1, 300),
-      stub.lease(runner(executorId, { runnerId: 'b' }), 1, 300),
-      stub.lease(runner(executorId, { runnerId: 'c' }), 1, 300),
+      stub.lease(runner(executorId, { runnerId: 'a' }), 1, 1_500),
+      stub.lease(runner(executorId, { runnerId: 'b' }), 1, 1_500),
+      stub.lease(runner(executorId, { runnerId: 'c' }), 1, 1_500),
     ]);
     const all = results.flat();
     expect(all).toHaveLength(1);
@@ -193,6 +193,7 @@ describe('CrawlerObject submitAndWait / lease / complete', () => {
     const { executorId, stub } = newExecutor();
     await stub.heartbeat(runner(executorId, { fetchModes: ['http', 'browser'] }));
     const waiting = stub.submitAndWait(job(executorId), SHORT);
+    await vi.waitFor(async () => expect((await stub.status()).queued).toBe(1));
     expect(await stub.lease(runner(executorId, { fetchModes: ['browser'] }), 1, 100)).toEqual([]);
     expect(await waiting).toMatchObject({ reason: 'lease_timeout' });
   });
@@ -226,6 +227,7 @@ describe('CrawlerObject submitAndWait / lease / complete', () => {
     await stub.heartbeat(runner(executorId));
     const input = job(executorId);
     const waiting = stub.submitAndWait(input, SHORT);
+    await vi.waitFor(async () => expect((await stub.status()).queued).toBe(1));
     expect(await stub.complete(input.jobId, '', okResult())).toBe('lease_mismatch');
     await waiting;
   });

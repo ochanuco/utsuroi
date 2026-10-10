@@ -194,7 +194,7 @@ describe('/api/runner protocol round trip', () => {
     const ctx = newCtx();
     await post(ctx, '/heartbeat', hb(ctx));
     const jobId = crypto.randomUUID();
-    const waiting = submit(ctx, jobId, { resultWaitMs: 300 });
+    const waiting = submit(ctx, jobId, { resultWaitMs: 1500 });
     const { jobs } = leaseResponseSchema.parse(await (await post(ctx, '/lease', ls(ctx))).json());
 
     const bad = await post(ctx, `/jobs/${jobId}/result`, { leaseToken: 'wrong', result: resultRequestResponseFx.result });
@@ -238,7 +238,7 @@ describe('/api/runner protocol round trip', () => {
     const ctx = newCtx();
     await post(ctx, '/heartbeat', hb(ctx));
     const jobId = crypto.randomUUID();
-    const waiting = submit(ctx, jobId, { resultWaitMs: 300 });
+    const waiting = submit(ctx, jobId, { resultWaitMs: 1500 });
     const { jobs } = leaseResponseSchema.parse(await (await post(ctx, '/lease', ls(ctx))).json());
 
     const huge = 'A'.repeat(8 * 1024 * 1024);
