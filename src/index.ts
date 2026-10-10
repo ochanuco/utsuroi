@@ -8,6 +8,7 @@ import { runReconciliation } from './pipeline/reconcile';
 
 export { MonitorObject, monitorControlFactory } from './do/monitorObject';
 export { HostObject, hostLimiterFactory } from './do/hostObject';
+export { CrawlerObject } from './do/crawlerObject';
 export { FetchEntrypoint } from './rpc/entrypoint';
 export type { FetchPageRequest, FetchPageResult } from './rpc/fetchPage';
 

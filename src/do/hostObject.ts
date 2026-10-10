@@ -153,7 +153,9 @@ export class HostObject extends DurableObject<Env> {
       state.halfOpenProbeLeaseId = null;
     }
 
-    if (outcome.failureClass === null) {
+    if (outcome.failureClass === 'executor_unavailable') {
+      // 実行基盤の問題で取得先 host の健全性とは無関係 (ADR-0023 §2): streak を増減させない
+    } else if (outcome.failureClass === null) {
       state.failureStreak = 0;
       state.circuitOpenUntil = null;
       state.nextAllowedAt = null;

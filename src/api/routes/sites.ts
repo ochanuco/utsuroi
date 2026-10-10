@@ -42,6 +42,7 @@ const FAILURE_CLASSES = [
   'invalid_content_type',
   'parse_error',
   'internal_error',
+  'executor_unavailable',
 ] as const satisfies readonly FailureClass[];
 
 const createSiteSchema = z.object({

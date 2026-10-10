@@ -1,0 +1,7 @@
+{
+  "executorId": "home",
+  "runnerId": "6f1b7a52-3c1e-4f6e-9a54-0d1d7b6a2c11",
+  "max": 2,
+  "waitMs": 20000,
+  "fetchModes": ["http"]
+}

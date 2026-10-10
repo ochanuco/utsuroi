@@ -5,6 +5,7 @@ import {
   planAttempts,
   runFetchSequence,
   shouldProceedToNext,
+  TRANSIENT_RETRY_FAILURE_CLASSES,
   validateFetcherPolicy,
 } from '../../src/fetch/policy';
 import type { FetchOutcome, FetcherPolicy, FetcherPolicyEntry } from '../../src/shared/contracts';
@@ -104,6 +105,12 @@ describe('validateFetcherPolicy', () => {
   });
 });
 
+describe('executor_unavailable', () => {
+  it('is not an in-entry retry target', () => {
+    expect(TRANSIENT_RETRY_FAILURE_CLASSES).not.toContain('executor_unavailable');
+  });
+});
+
 describe('shouldProceedToNext', () => {
   it('never proceeds for NEVER_PROCEEDABLE_FAILURES regardless of proceedOn', () => {
     const entry: FetcherPolicyEntry = { fetcherId: 'x', proceedOn: ['not_found', 'network_error'] };
@@ -120,6 +127,7 @@ describe('shouldProceedToNext', () => {
     expect(shouldProceedToNext(entry, 'network_error')).toBe(true);
     expect(shouldProceedToNext(entry, 'timeout')).toBe(true);
     expect(shouldProceedToNext(entry, 'http_5xx')).toBe(true);
+    expect(shouldProceedToNext(entry, 'executor_unavailable')).toBe(true);
     expect(shouldProceedToNext(entry, 'http_429')).toBe(false);
     expect(shouldProceedToNext(entry, 'http_403')).toBe(false);
   });
