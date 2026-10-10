@@ -276,6 +276,8 @@ Runnerは自律スケジュールを持たず、Cloudflare側から発行され�
 
 ## 15. セキュリティ
 
+- 管理APIはCloudflare Accessが発行するJWTをWorker自身が検証して認可する。呼び出し元（人間のメールまたはサービストークン名）を監査用に識別する（ADR-0020）。
+- AccessのAUDが未設定の間は全APIリクエストを拒否し、workers.devとプレビューURLは無効にする。
 - URL登録時と接続直前にSSRF検査を行う。
 - loopback、link-local、private、metadata endpointを既定拒否する。
 - DNS rebindingを考慮して接続時にも解決結果を検証する。

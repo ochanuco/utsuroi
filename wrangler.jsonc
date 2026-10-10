@@ -4,6 +4,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
   "compatibility_flags": ["nodejs_compat"],
+  "routes": [{ "pattern": "utsuroi.chanu.co", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false,
   "migrations": [
     {
       "tag": "v1",
@@ -39,6 +42,10 @@
     "crons": ["*/5 * * * *"]
   },
   "vars": {
+    // Cloudflare Access (ADR-0020)。ACCESS_AUD が空の間は全 /api リクエストを拒否する。
+    "ACCESS_TEAM_DOMAIN": "chanuco.cloudflareaccess.com",
+    "ACCESS_AUD": "0fc1d5919ae7e43b02ade17285ca5dab6b49c9a6b91acb9dc529464833422be7",
+    "ACCESS_CALLERS": "{\"abf9c4f9f31104d59dbb7c49468de6e4.access\":\"runner-home\"}",
     // bot UA だと WAF に 503 で弾かれるサイト (SUUMO 等) があるため、当面はブラウザ相当の
     // UA を全 fetch 共通で使う。robots.txt 評価も同じ UA で行うため '*' グループにマッチする
     // (bot 専用グループでの Allow/Disallow は拾わなくなる)。site/source 単位の UA 設定は将来課題。

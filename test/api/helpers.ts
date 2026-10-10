@@ -3,7 +3,14 @@ import type { DnsResolver } from '../../src/net';
 import type { MonitorControl, MonitorControlFactory, MonitorControlStatus } from '../../src/shared/contracts';
 import { createApp, type CreateAppOptions } from '../../src/api';
 
-export const ADMIN_TOKEN = 'test-token';
+import { baseClaims, generateKeyPair, jwksFetch, jwksFor, signJwt, TEST_AUD, TEST_TEAM_DOMAIN } from './accessJwt';
+
+export const TEST_CALLER_EMAIL = 'tester@example.com';
+export const TEST_CALLER_ID = `user:${TEST_CALLER_EMAIL}`;
+
+export const testKeyPair = await generateKeyPair();
+const testJwks = await jwksFor(testKeyPair);
+const testHumanJwt = await signJwt(testKeyPair, baseClaims({ email: TEST_CALLER_EMAIL, exp: Math.floor(Date.now() / 1000) + 24 * 3600 }));
 
 /**
  * destinations.webhook_url 暗号化 (src/db/webhookCrypto.ts) 用の固定テストキー。
@@ -16,13 +23,20 @@ export function db(): D1Database {
   return env.DB;
 }
 
-/** app.request() の第3引数として渡す Env (テスト用トークンを注入) */
+/** app.request() の第3引数として渡す Env (Access 設定と暗号鍵を注入) */
 export function testEnv(overrides: Record<string, unknown> = {}) {
-  return { ...env, ADMIN_TOKEN, WEBHOOK_ENC_KEY: TEST_WEBHOOK_ENC_KEY, ...overrides };
+  return {
+    ...env,
+    ACCESS_TEAM_DOMAIN: TEST_TEAM_DOMAIN,
+    ACCESS_AUD: TEST_AUD,
+    ACCESS_CALLERS: '{}',
+    WEBHOOK_ENC_KEY: TEST_WEBHOOK_ENC_KEY,
+    ...overrides,
+  };
 }
 
 export function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
-  return { authorization: `Bearer ${ADMIN_TOKEN}`, ...extra };
+  return { 'cf-access-jwt-assertion': testHumanJwt, ...extra };
 }
 
 export function jsonHeaders(extra: Record<string, string> = {}): Record<string, string> {
@@ -93,6 +107,7 @@ export function buildTestApp(opts: Partial<CreateAppOptions> = {}) {
     monitorControlFactory: opts.monitorControlFactory ?? fake.factory,
     ssrfResolver: opts.ssrfResolver ?? stubPublicResolver(),
     fetchImpl: opts.fetchImpl,
+    accessFetchImpl: opts.accessFetchImpl ?? jwksFetch(testJwks),
   });
   return { app, fakeMonitorControl: fake.state };
 }

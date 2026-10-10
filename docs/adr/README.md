@@ -21,3 +21,4 @@
 | [0017](0017-robots-origin-normalization-and-transient-unavailable.md) | robots canonical_originを正規化し、一過性のrobots.txt取得不能では停止しない（連続3回で初めてPolicy Stop） | Accepted |
 | [0018](0018-dry-run-endpoint.md) | URL単発の下見用DryRunエンドポイント（副作用なし、robotsは判定して報告するのみ、SSRFは強制） | Accepted |
 | [0019](0019-tag-based-notification-routing.md) | Changeのタグによる通知ルーティング（Classify段が決定論ルールとjevでタグ付け、Subscription.tagで宛先選択、Destinationにthread_id） | Proposed |
+| [0020](0020-cloudflare-access-auth.md) | 管理APIの認証をADMIN_TOKEN BearerからCloudflare Access JWT検証へ置き換える（Client ID対応表で呼び出し元を識別、未設定はfail closed、workers.dev/プレビュー無効） | Proposed |
