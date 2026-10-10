@@ -23,3 +23,4 @@
 | [0019](0019-tag-based-notification-routing.md) | Changeのタグによる通知ルーティング（Classify段が決定論ルールとjevでタグ付け、Subscription.tagで宛先選択、Destinationにthread_id） | Proposed |
 | [0020](0020-cloudflare-access-auth.md) | 管理APIの認証をADMIN_TOKEN BearerからCloudflare Access JWT検証へ置き換える（Client ID対応表で呼び出し元を識別、未設定はfail closed、workers.dev/プレビュー無効） | Proposed |
 | [0021](0021-external-executors-pull-and-push.md) | 外部Executorの配送方式（Home Runnerはpull型、GCP Executorはpush型）とFetcherレジストリ | Proposed |
+| [0022](0022-service-binding-rpc-fetch.md) | 他WorkerからのページFetch依頼をService Binding RPCで受ける（呼び出し元はbinding propsで識別、許可ホストとFetcherはsecretで呼び出し元ごとに制限、管理APIの認証は変更しない） | Proposed |

@@ -8,7 +8,14 @@ export default defineConfig(async () => {
       cloudflareTest({
         wrangler: { configPath: './wrangler.jsonc' },
         miniflare: {
-          bindings: { TEST_MIGRATIONS: migrations, ACCESS_AUD: 'test-aud-tag' },
+          bindings: {
+            TEST_MIGRATIONS: migrations,
+            ACCESS_AUD: 'test-aud-tag',
+            RPC_CALLERS: JSON.stringify({
+              'caller-a': { allowedHosts: ['example.com', 'Docs.Example.com', '127.0.0.1'], fetchers: ['cf-http'] },
+              'caller-b': { allowedHosts: ['example.com'], fetchers: ['cf-http', 'cf-http'] },
+            }),
+          },
         },
       }),
     ],
