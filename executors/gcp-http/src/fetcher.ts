@@ -141,7 +141,8 @@ export function createFetchService(options: FetchServiceOptions) {
     if (addresses.length === 0) throw new FetchFailure('network_error', 'dns returned no addresses');
     // 1 つでも拒否対象を含む名前は使わない (解決結果の取捨選択で迂回されないように)。
     if (addresses.some((a) => blockedAddress(a.address))) throw new FetchFailure('ssrf_blocked', 'resolved address not allowed');
-    return addresses[0] as ResolvedAddress;
+    // Cloud Run は既定で IPv6 で外に出られないので、A レコードがあれば優先する
+    return (addresses.find((a) => a.family === 4) ?? addresses[0]) as ResolvedAddress;
   }
 
   async function hop(
