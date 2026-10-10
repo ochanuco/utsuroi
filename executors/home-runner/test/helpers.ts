@@ -6,6 +6,14 @@ import type { Logger } from '../src/log.ts';
 
 export const TOKEN_SECRET = 'secret-service-token-value';
 
+/** keep-alive 接続が残っていても待たずに閉じる */
+export function closeServer(server: http.Server): Promise<void> {
+  return new Promise((resolve) => {
+    server.close(() => resolve());
+    server.closeAllConnections();
+  });
+}
+
 export interface Recorded {
   path: string;
   headers: http.IncomingHttpHeaders;
@@ -32,7 +40,7 @@ export async function startFakeWorker(): Promise<FakeWorker> {
     maintenance: false,
     resultResponder: () => ({ status: 200, body: { accepted: true } }),
     forceStatus: null,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
+    close: () => closeServer(server),
   };
   const server = http.createServer(async (req, res) => {
     const chunks: Buffer[] = [];
@@ -81,7 +89,7 @@ export interface FakeTarget {
 }
 
 export async function startFakeTarget(handler?: http.RequestListener): Promise<FakeTarget> {
-  const target: FakeTarget = { url: '', hits: 0, close: () => new Promise((resolve) => server.close(() => resolve())) };
+  const target: FakeTarget = { url: '', hits: 0, close: () => closeServer(server) };
   const server = http.createServer((req, res) => {
     target.hits++;
     if (handler) return handler(req, res);
