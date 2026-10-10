@@ -1,13 +1,13 @@
 /**
  * Utsuroi 管理API (Hono)。SPEC §2(目的6), §9.2, §14〜§17, ADR-0009。
  *
- * createApp() は Env バインディングで動く Hono アプリを返す。全 /api/* は Bearer 認証必須。
+ * createApp() は Env バインディングで動く Hono アプリを返す。全 /api/* は Cloudflare Access JWT 検証必須。
  */
 import { Hono } from 'hono';
 import type { Env } from '../shared/env';
 import type { MonitorControlFactory } from '../shared/contracts';
 import type { DnsResolver } from '../net';
-import { bearerAuth } from './auth';
+import { createAccessAuth, type AppEnv } from './auth';
 import { ApiError } from './errors';
 import { auditEventsRoutes } from './routes/auditEvents';
 import { changesRoutes } from './routes/changes';
@@ -36,12 +36,14 @@ export interface CreateAppOptions {
    * 省略時は globalThis.fetch。テストでは実ネットワークを使わないためスタブを注入する。
    */
   fetchImpl?: typeof fetch;
+  /** Access JWKS 取得に使う fetch。テストでは実ネットワークを使わないためスタブを注入する */
+  accessFetchImpl?: typeof fetch;
 }
 
-export function createApp(opts: CreateAppOptions = {}): Hono<{ Bindings: Env }> {
-  const app = new Hono<{ Bindings: Env }>();
+export function createApp(opts: CreateAppOptions = {}): Hono<AppEnv> {
+  const app = new Hono<AppEnv>();
 
-  app.use('/api/*', bearerAuth);
+  app.use('/api/*', createAccessAuth({ fetchImpl: opts.accessFetchImpl }));
 
   app.route('/api/sites', sitesRoutes());
   app.route('/api/sources', sourcesRoutes({ ssrfResolver: opts.ssrfResolver }));

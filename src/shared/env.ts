@@ -7,8 +7,12 @@ export interface Env {
   MONITOR_DO: DurableObjectNamespace;
   HOST_DO: DurableObjectNamespace;
   USER_AGENT: string;
-  /** 管理APIの Bearer トークン (wrangler secret)。未設定時はAPIを拒否する */
-  ADMIN_TOKEN?: string;
+  /** Cloudflare Access のチームドメイン (例: example.cloudflareaccess.com)。JWKS と iss の検証に使う */
+  ACCESS_TEAM_DOMAIN: string;
+  /** Access アプリケーションの AUD タグ。空の間は全 /api リクエストを拒否する */
+  ACCESS_AUD: string;
+  /** サービストークンの Client ID -> 呼び出し元名の JSON オブジェクト。マップに無い Client ID は 403 */
+  ACCESS_CALLERS: string;
   /**
    * destinations.webhook_url を AES-256-GCM で暗号化保存するための鍵 (wrangler secret)。
    * base64 エンコードされた 32 byte の生鍵を想定する (SPEC §15「Secretsまたは暗号化済み参照」)。

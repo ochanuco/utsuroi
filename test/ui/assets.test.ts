@@ -13,22 +13,22 @@
  * 実際に `public/index.html` / `public/app.js` が assets として配信され、`/api/*` のみ
  * Workerへ渡ることは `wrangler dev` で手動確認済み (report参照)。ここでは
  * vitest-pool-workers で機械的に検証できる範囲、すなわち「assets設定を追加しても
- * /api/* が引き続き Hono (Bearer認証必須) に渡ること」を確認する。
+ * /api/* が引き続き Hono (Access JWT 検証必須) に渡ること」を確認する。
  */
 import { SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 
 describe('web ui assets routing', () => {
-  it('/api/* still requires bearer auth after adding assets config (not swallowed by asset routing)', async () => {
+  it('/api/* still requires Access JWT auth after adding assets config (not swallowed by asset routing)', async () => {
     const res = await SELF.fetch('https://example.com/api/sites');
     expect(res.status).toBe(401);
     const data = (await res.json()) as { error: { code: string } };
     expect(data.error.code).toBe('unauthorized');
   });
 
-  it('/api/* with a wrong bearer token is still rejected by the Hono API', async () => {
+  it('/api/* with a invalid Access JWT is still rejected by the Hono API', async () => {
     const res = await SELF.fetch('https://example.com/api/does-not-exist', {
-      headers: { authorization: 'Bearer wrong-token' },
+      headers: { 'cf-access-jwt-assertion': 'not-a-jwt' },
     });
     expect(res.status).toBe(401);
   });

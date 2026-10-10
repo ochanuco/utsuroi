@@ -1,24 +1,7 @@
 /**
- * /api/* 呼び出しの薄いラッパ。ADMIN_TOKEN を localStorage に保存し、
- * Bearer 認証ヘッダを常時付与する。401時は保存済みトークンを破棄し、
- * 登録された unauthorized ハンドラ (トークン再入力画面への遷移) を呼ぶ。
+ * /api/* 呼び出しの薄いラッパ。認証は Cloudflare Access の Cookie が同一オリジンで自動的に付くため、
+ * 認証ヘッダは付けない。
  */
-
-const TOKEN_KEY = 'utsuroi_admin_token';
-
-export function getToken() {
-  return localStorage.getItem(TOKEN_KEY);
-}
-
-// 割り切り: 個人用単一管理者ツールのため、トークンは localStorage に平文保存する
-// (HttpOnly Cookie化はサーバー側ログイン実装を伴うためスコープ外。report参照)。
-export function setToken(token) {
-  localStorage.setItem(TOKEN_KEY, token);
-}
-
-export function clearToken() {
-  localStorage.removeItem(TOKEN_KEY);
-}
 
 export class ApiError extends Error {
   constructor(status, code, message) {
@@ -29,14 +12,8 @@ export class ApiError extends Error {
   }
 }
 
-let unauthorizedHandler = () => {};
-export function setUnauthorizedHandler(fn) {
-  unauthorizedHandler = fn;
-}
-
 async function request(path, { method = 'GET', body, raw = false } = {}) {
-  const token = getToken();
-  const headers = { authorization: `Bearer ${token ?? ''}` };
+  const headers = {};
   let payload;
   if (body !== undefined) {
     headers['content-type'] = 'application/json';
@@ -54,9 +31,7 @@ async function request(path, { method = 'GET', body, raw = false } = {}) {
   }
 
   if (res.status === 401) {
-    clearToken();
-    unauthorizedHandler();
-    throw new ApiError(401, 'unauthorized', '認証に失敗しました。トークンを確認してください。');
+    throw new ApiError(401, 'unauthorized', '認証に失敗しました。ページを再読み込みしてログインし直してください。');
   }
 
   if (!res.ok) {
@@ -89,8 +64,3 @@ export const api = {
   patch: (path, body) => request(path, { method: 'PATCH', body: body ?? {} }),
   del: (path) => request(path, { method: 'DELETE' }),
 };
-
-/** GET /api/sites を叩いてトークンの有効性を確認する (トークンゲート) */
-export async function verifyToken() {
-  await request('/sites?limit=1');
-}

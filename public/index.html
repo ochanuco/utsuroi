@@ -7,20 +7,7 @@
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <div id="gate" class="gate hidden">
-    <div class="gate-card">
-      <h1>Utsuroi 管理画面</h1>
-      <p class="muted">管理トークンを入力してください。</p>
-      <form id="gate-form">
-        <label for="gate-token">ADMIN_TOKEN</label>
-        <input id="gate-token" type="password" autocomplete="off" required />
-        <button type="submit">ログイン</button>
-      </form>
-      <p id="gate-error" class="error hidden"></p>
-    </div>
-  </div>
-
-  <div id="app" class="app hidden">
+  <div id="app" class="app">
     <header class="topbar">
       <div class="topbar-title">Utsuroi</div>
       <nav class="topbar-nav">
@@ -29,7 +16,6 @@
         <a href="#/audit-events">Audit Events</a>
         <a href="#/dry-run">Dry Run</a>
       </nav>
-      <button id="logout-button" type="button" class="button-ghost">ログアウト</button>
     </header>
     <main id="view" class="view"></main>
   </div>

@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { createApp } from '../../src/api';
-import { authHeaders, jsonHeaders, testEnv } from './helpers';
+import { authHeaders, buildTestApp, jsonHeaders, testEnv } from './helpers';
 
-const app = createApp();
+const { app } = buildTestApp();
 
 describe('GET /api/fetchers', () => {
   it('requires auth', async () => {
