@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - 'executors/gcp-http/**'
+      - 'executors/shared/**'
+      - 'executors/.dockerignore'
   workflow_dispatch:
 
 permissions:
@@ -56,7 +58,7 @@ jobs:
         env:
           IMAGE: ${{ env.IMAGE_BASE }}:${{ github.sha }}
         run: |
-          docker build --tag "$IMAGE" executors/gcp-http
+          docker build --file executors/gcp-http/Dockerfile --tag "$IMAGE" executors
           docker push "$IMAGE"
 
       - name: Deploy to Cloud Run

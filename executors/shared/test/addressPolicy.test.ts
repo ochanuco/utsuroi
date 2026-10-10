@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isBlockedAddress, isBlockedHostname } from '../src/addressPolicy.ts';
+import { isBlockedAddress, isBlockedHostname, parseCidrList } from '../src/addressPolicy.ts';
 
 test('blocks private, loopback, link-local and metadata addresses', () => {
   for (const ip of [
@@ -28,4 +28,20 @@ test('blocks metadata and local hostnames', () => {
     assert.equal(isBlockedHostname(h), true, h);
   }
   assert.equal(isBlockedHostname('example.com'), false);
+});
+
+test('blocks addresses in extra CIDRs only when given', () => {
+  const extra = parseCidrList('93.184.216.0/24, 2606:4700:4700::/48');
+  assert.equal(isBlockedAddress('93.184.216.34'), false);
+  assert.equal(isBlockedAddress('93.184.216.34', extra), true);
+  assert.equal(isBlockedAddress('93.184.217.1', extra), false);
+  assert.equal(isBlockedAddress('2606:4700:4700::1111', extra), true);
+  assert.equal(isBlockedAddress('2606:4700:4701::1', extra), false);
+  assert.equal(isBlockedAddress('10.0.0.1', parseCidrList('')), true);
+});
+
+test('rejects malformed CIDR lists', () => {
+  for (const bad of ['10.0.0.0', '10.0.0.0/33', 'abc/8', '10.0.0.0/8/8', '::/129', '10.0.0.0/-1']) {
+    assert.throws(() => parseCidrList(bad), /invalid CIDR/, bad);
+  }
 });

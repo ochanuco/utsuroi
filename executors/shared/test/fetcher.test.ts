@@ -225,3 +225,26 @@ test('maps connection errors to network_error', async () => {
   const err = await failureOf(service({ url: `http://pinned.example:${closedPort}/`, maxBytes: 1000, headers: {} }));
   assert.equal(err.failureClass, 'network_error');
 });
+
+test('does not connect over ipv6 when allowIpv6 is false', async () => {
+  const v6Only = createFetchService({
+    ...base,
+    allowIpv6: false,
+    resolve: async () => [{ address: '2606:4700:4700::1111', family: 6 }],
+  });
+  assert.equal((await failureOf(v6Only({ url: 'https://example.com/', maxBytes: 100, headers: {} }))).failureClass, 'network_error');
+  const literal = createFetchService({ ...base, allowIpv6: false });
+  assert.equal((await failureOf(literal({ url: 'http://[2606:4700:4700::1111]/', maxBytes: 100, headers: {} }))).failureClass, 'network_error');
+});
+
+test('still rejects blocked ipv6 results when allowIpv6 is false', async () => {
+  const mixed = createFetchService({
+    ...base,
+    allowIpv6: false,
+    resolve: async () => [
+      { address: '93.184.216.34', family: 4 },
+      { address: 'fd00::1', family: 6 },
+    ],
+  });
+  assert.equal((await failureOf(mixed({ url: 'https://example.com/', maxBytes: 100, headers: {} }))).failureClass, 'ssrf_blocked');
+});
