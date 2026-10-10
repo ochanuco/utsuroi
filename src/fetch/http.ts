@@ -36,7 +36,7 @@ function buildRequestHeaders(req: FetchRequest): Headers {
   return headers;
 }
 
-function failure(
+export function failure(
   failureClass: FailureClass,
   status: number | null,
   message: string,
@@ -55,7 +55,7 @@ async function drainBody(response: Response): Promise<void> {
   }
 }
 
-function classifyNetworkError(err: unknown): FetchFailure {
+export function classifyNetworkError(err: unknown): FetchFailure {
   if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) {
     return failure('timeout', null, `request timed out: ${err.message || err.name}`, null);
   }
@@ -69,7 +69,7 @@ interface BoundedBodyResult {
 }
 
 /** Content-Length 事前検査 + ストリーム読みで maxBytes を強制する */
-async function readBodyWithLimit(response: Response, maxBytes: number): Promise<BoundedBodyResult> {
+export async function readBodyWithLimit(response: Response, maxBytes: number): Promise<BoundedBodyResult> {
   const contentLengthHeader = response.headers.get('content-length');
   if (contentLengthHeader !== null) {
     const declaredLength = Number(contentLengthHeader);
@@ -152,7 +152,7 @@ function parseRetryAfterHeader(value: string | null): number | null {
   return null;
 }
 
-async function handleTerminalResponse(
+export async function handleTerminalResponse(
   response: Response,
   finalUrl: string,
   req: FetchRequest,

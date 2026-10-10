@@ -16,7 +16,7 @@ export default defineConfig(async () => {
       setupFiles: ['./test/apply-migrations.ts'],
       // .claude/worktrees/ 配下 (AIエージェントの隔離worktree) のテストを拾って
       // 二重実行しないようにする。node_modules 等の既定 exclude は configDefaults から継承する。
-      exclude: [...configDefaults.exclude, '**/.claude/**'],
+      exclude: [...configDefaults.exclude, '**/.claude/**', 'executors/**'],
     },
   };
 });

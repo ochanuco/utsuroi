@@ -2,7 +2,7 @@
  * Fetcher Policy (OrderList) に従って1つの URL を取得し、試行ごとに check_attempts を記録する。
  * Page の Source URL、Feed/Sitemap の Source URL、Sitemap Index の子 Sitemap URL のいずれからも使う。
  */
-import { httpFetch, runFetchSequence } from '../fetch';
+import { defaultFetcherRegistry, runFetcher, runFetchSequence } from '../fetch';
 import { createCheckAttempt } from '../db';
 import { checkUrlForSsrf } from '../net';
 import type { FetchOutcome } from '../shared/contracts';
@@ -15,7 +15,7 @@ export interface FetchTargetResult {
 }
 
 /**
- * 'cf-http' のみ実装する (MVP wave2 スコープ)。それ以外の fetcherId は internal_error 扱いにする。
+ * fetcherId は Fetcher レジストリ (src/fetch/registry.ts) で実装へ解決する。未登録の id は internal_error。
  */
 export async function fetchTargetThroughPolicy(
   ctx: CheckContext,
@@ -29,26 +29,15 @@ export async function fetchTargetThroughPolicy(
   const executeFetcher = async (fetcherId: string): Promise<FetchOutcome> => {
     const index = attemptIndex++;
 
-    const outcome: FetchOutcome =
-      fetcherId === 'cf-http'
-        ? await httpFetch(
-            {
-              url,
-              userAgent: ctx.env.USER_AGENT,
-              etag: conditional.etag,
-              lastModified: conditional.lastModified,
-            },
-            // リダイレクト各ホップで URL を再検証する (SPEC §15)。初回 URL は呼び出し元で
-            // 既に静的/動的 SSRF 検査済みだが、リダイレクト先までは検査していないため。
-            { fetch: ctx.fetchImpl, urlGuard: checkUrlForSsrf },
-          )
-        : {
-            ok: false,
-            failureClass: 'internal_error',
-            status: null,
-            message: `unknown fetcherId: ${fetcherId}`,
-            retryAfterSeconds: null,
-          };
+    const outcome = await runFetcher(defaultFetcherRegistry, fetcherId, {
+      url,
+      userAgent: ctx.env.USER_AGENT,
+      etag: conditional.etag,
+      lastModified: conditional.lastModified,
+      env: ctx.env,
+      fetchImpl: ctx.fetchImpl,
+      urlGuard: checkUrlForSsrf,
+    });
 
     const attemptId = crypto.randomUUID();
     lastAttemptId = attemptId;
