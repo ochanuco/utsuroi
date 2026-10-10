@@ -35,6 +35,12 @@ export interface FetcherInvocation {
 /** 失敗は FetchOutcome で返す。例外を投げた場合は呼び出し側が internal_error に変換する */
 export type FetcherImplementation = (invocation: FetcherInvocation) => Promise<FetchOutcome>;
 
+/**
+ * Runner の結果を待つ pull 型 Fetcher。1 回の待ちが最大 50 秒かかるため、エントリ内リトライはせず、
+ * 1 チェック内の合計待ち時間に予算を設ける (HostObject の lease TTL は 60 秒)。
+ */
+export const PULL_FETCHER_IDS: ReadonlySet<string> = new Set(['home-http']);
+
 export type FetcherRegistry = ReadonlyMap<string, FetcherImplementation>;
 
 const cfHttp: FetcherImplementation = (inv) =>

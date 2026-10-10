@@ -49,5 +49,7 @@ export interface CheckContext {
   titleFetchesUsed?: number;
   /** このチェックの中で executor_unavailable になった Fetcher。以降の取得では投入せず即失敗させる (ADR-0023 §1)。省略時は空 */
   unavailableFetchers?: Set<string>;
+  /** pull 型 Fetcher の結果待ちに、このチェックで使った時間 (ms)。HostObject の lease TTL に収めるための予算管理 */
+  pullWaitUsedMs?: number;
 }
 

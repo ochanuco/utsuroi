@@ -114,4 +114,69 @@ describe('home-http in the fetcher policy', () => {
     expect(summary).toEqual(['cf-http:ok', 'cf-http:ok', 'home-http:executor_unavailable', 'home-http:executor_unavailable']);
     expect(attempts.filter((a) => a.errorMessage?.includes('earlier in this check'))).toHaveLength(1);
   });
+
+  async function fetchCtx(url: string, over: Partial<CheckContext> = {}) {
+    const { monitor, site, source } = await buildPipelineFixture({ sourceUrl: url });
+    await putFetcherPolicy(db(), site.id, {
+      allowList: ['home-http', 'cf-http'],
+      orderList: [{ fetcherId: 'home-http' }, { fetcherId: 'cf-http' }],
+    });
+    const policy = (await getFetcherPolicy(db(), site.id))!;
+    const job = (await createCheckJobIfNew(db(), { monitorId: monitor.id, scheduledFor: '2026-10-11T00:00:00.000Z' })).row;
+    const target = await upsertTarget(db(), { monitorId: monitor.id, url });
+    const ctx: CheckContext = {
+      env: checkEnv(),
+      db: db(),
+      monitor,
+      source,
+      site,
+      policy,
+      job,
+      fetchImpl: routedFetch(cfOk(url)),
+      now: () => Date.now(),
+      changeIds: [],
+      ...over,
+    };
+    return { ctx, target, job };
+  }
+
+  it('does not retry home-http in-entry on a runner network_error', async () => {
+    const { ctx, target, job } = await fetchCtx('https://example.com/a');
+    const runner = await startFakeRunner(() => ({ kind: 'error', failureClass: 'network_error', message: 'x' }));
+    try {
+      await fetchTargetThroughPolicy(ctx, target.id, 'https://example.com/a', { etag: null, lastModified: null });
+      expect(runner.seen).toHaveLength(1);
+    } finally {
+      await runner.stop();
+    }
+    const attempts = await listCheckAttempts(db(), job.id);
+    expect(attempts.filter((a) => a.fetcherId === 'home-http')).toHaveLength(1);
+    expect(attempts.some((a) => a.fetcherId === 'cf-http' && a.outcome === 'success')).toBe(true);
+  });
+
+  it('refuses to submit to home-http once the per-check wait budget is nearly used up', async () => {
+    const { ctx, target, job } = await fetchCtx('https://example.com/a', { pullWaitUsedMs: 52_000 });
+    const runner = await startFakeRunner(() => okRunnerResult());
+    try {
+      await fetchTargetThroughPolicy(ctx, target.id, 'https://example.com/a', { etag: null, lastModified: null });
+      expect(runner.seen).toHaveLength(0);
+    } finally {
+      await runner.stop();
+    }
+    const attempts = await listCheckAttempts(db(), job.id);
+    const home = attempts.find((a) => a.fetcherId === 'home-http')!;
+    expect(home).toMatchObject({ failureClass: 'executor_unavailable', executorJobId: null });
+    expect(home.errorMessage).toContain('budget');
+  });
+
+  it('accumulates the time spent waiting on home-http into the per-check budget', async () => {
+    const { ctx, target } = await fetchCtx('https://example.com/a');
+    const runner = await startFakeRunner(() => okRunnerResult());
+    try {
+      await fetchTargetThroughPolicy(ctx, target.id, 'https://example.com/a', { etag: null, lastModified: null });
+    } finally {
+      await runner.stop();
+    }
+    expect(ctx.pullWaitUsedMs).toBeGreaterThan(0);
+  });
 });
