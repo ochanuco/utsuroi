@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildTestApp, jsonHeaders, testEnv } from './helpers';
+import { buildTestApp, db, jsonHeaders, testEnv } from './helpers';
 
 /** URL 前方一致でレスポンスを返す fetch スタブ。未登録URLは 404 */
 function routedFetch(
@@ -18,12 +18,32 @@ function htmlResponse(html: string, contentType = 'text/html; charset=utf-8'): R
   return new Response(html, { status: 200, headers: { 'content-type': contentType } });
 }
 
-async function dryRun(app: ReturnType<typeof buildTestApp>['app'], url: string): Promise<Response> {
+async function dryRun(
+  app: ReturnType<typeof buildTestApp>['app'],
+  url: string,
+  extra: { fetcherId?: string; env?: Record<string, unknown> } = {},
+): Promise<Response> {
   return app.request(
     '/api/dry-run',
-    { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ url }) },
-    testEnv(),
+    {
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify(extra.fetcherId ? { url, fetcher_id: extra.fetcherId } : { url }),
+    },
+    testEnv(extra.env),
   );
+}
+
+async function ed25519Pem(): Promise<string> {
+  const pair = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as CryptoKeyPair;
+  const der = (await crypto.subtle.exportKey('pkcs8', pair.privateKey)) as ArrayBuffer;
+  const b64 = btoa(String.fromCharCode(...new Uint8Array(der)));
+  return `-----BEGIN PRIVATE KEY-----\n${b64.match(/.{1,64}/g)!.join('\n')}\n-----END PRIVATE KEY-----\n`;
+}
+
+async function countRows(table: string): Promise<number> {
+  const row = await db().prepare(`SELECT COUNT(*) AS n FROM ${table}`).first<{ n: number }>();
+  return row!.n;
 }
 
 describe('POST /api/dry-run (ADR-0018)', () => {
@@ -142,5 +162,89 @@ describe('POST /api/dry-run (ADR-0018)', () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
     expect(body.error.code).toBe('unsupported_scheme');
+  });
+
+  describe('fetcher_id', () => {
+    it('reports fetcher_id as null when omitted', async () => {
+      const { app } = buildTestApp({
+        fetchImpl: routedFetch({
+          'https://example.com/robots.txt': () => new Response('User-agent: *\nDisallow:', { status: 200 }),
+          'https://example.com/page': () => htmlResponse('<html><head><title>T</title></head></html>'),
+        }),
+      });
+      const body = (await (await dryRun(app, 'https://example.com/page')).json()) as any;
+      expect(body.fetch.fetcher_id).toBeNull();
+      expect(body.title).toBe('T');
+    });
+
+    it('fetches with cf-http when specified', async () => {
+      const { app } = buildTestApp({
+        fetchImpl: routedFetch({
+          'https://example.com/robots.txt': () => new Response('User-agent: *\nDisallow:', { status: 200 }),
+          'https://example.com/page': () => htmlResponse('<html><head><title>cf</title></head></html>'),
+        }),
+      });
+      const res = await dryRun(app, 'https://example.com/page', { fetcherId: 'cf-http' });
+      const body = (await res.json()) as any;
+      expect(res.status).toBe(200);
+      expect(body.fetch.fetcher_id).toBe('cf-http');
+      expect(body.title).toBe('cf');
+    });
+
+    it('fetches through the GCP executor when gcp-http is specified, without writing check_attempts', async () => {
+      const attemptsBefore = await countRows('check_attempts');
+      const { app } = buildTestApp({
+        fetchImpl: routedFetch({
+          'https://example.com/robots.txt': () => new Response('User-agent: *\nDisallow:', { status: 200 }),
+          'https://executor.example.test/': () =>
+            new Response(
+              JSON.stringify({
+                kind: 'response',
+                status: 200,
+                url: 'https://example.com/page',
+                contentType: 'text/html',
+                headers: { 'content-type': 'text/html' },
+                body: btoa('<html><head><title>gcp</title></head></html>'),
+                truncated: false,
+                durationMs: 5,
+              }),
+              { status: 200, headers: { 'content-type': 'application/json' } },
+            ),
+        }),
+      });
+      const res = await dryRun(app, 'https://example.com/page', {
+        fetcherId: 'gcp-http',
+        env: { GCP_EXECUTOR_URL: 'https://executor.example.test/', GCP_EXECUTOR_SIGNING_KEY: await ed25519Pem() },
+      });
+      const body = (await res.json()) as any;
+      expect(res.status).toBe(200);
+      expect(body.fetch.fetcher_id).toBe('gcp-http');
+      expect(body.fetch.ok).toBe(true);
+      expect(body.title).toBe('gcp');
+      expect(await countRows('check_attempts')).toBe(attemptsBefore);
+    });
+
+    it('rejects an unknown fetcher_id with 400 unknown_fetcher', async () => {
+      const { app } = buildTestApp();
+      const res = await dryRun(app, 'https://example.com/page', { fetcherId: 'nope-http' });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as any;
+      expect(body.error.code).toBe('unknown_fetcher');
+    });
+
+    it('returns an executor_unavailable outcome for a pull fetcher with no runner online', async () => {
+      const { app } = buildTestApp({
+        fetchImpl: routedFetch({
+          'https://example.com/robots.txt': () => new Response('User-agent: *\nDisallow:', { status: 200 }),
+        }),
+      });
+      const res = await dryRun(app, 'https://example.com/page', { fetcherId: 'home-http' });
+      const body = (await res.json()) as any;
+      expect(res.status).toBe(200);
+      expect(body.fetch.ok).toBe(false);
+      expect(body.fetch.fetcher_id).toBe('home-http');
+      expect(body.fetch.failure_class).toBe('executor_unavailable');
+      expect(body.title).toBeNull();
+    });
   });
 });
