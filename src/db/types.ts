@@ -252,6 +252,8 @@ export interface CheckAttemptRow {
   durationMs: number | null;
   snapshotId: string | null;
   errorMessage: string | null;
+  /** pull 型 Executor (home-http) が発行した job id。それ以外は null */
+  executorJobId: string | null;
   startedAt: string;
   finishedAt: string | null;
   createdAt: string;
@@ -269,6 +271,7 @@ export interface CreateCheckAttemptInput {
   durationMs?: number | null;
   snapshotId?: string | null;
   errorMessage?: string | null;
+  executorJobId?: string | null;
   startedAt?: string;
   finishedAt?: string | null;
 }

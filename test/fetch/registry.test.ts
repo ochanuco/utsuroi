@@ -17,8 +17,8 @@ function invocation(fetchImpl?: typeof fetch): FetcherInvocation {
 }
 
 describe('fetcher registry', () => {
-  it('registers cf-http and gcp-http', () => {
-    expect([...defaultFetcherRegistry.keys()].sort()).toEqual(['cf-http', 'gcp-http']);
+  it('registers cf-http, gcp-http and home-http', () => {
+    expect([...defaultFetcherRegistry.keys()].sort()).toEqual(['cf-http', 'gcp-http', 'home-http']);
   });
 
   it('runs cf-http through httpFetch with the same request shape', async () => {
@@ -39,8 +39,8 @@ describe('fetcher registry', () => {
   });
 
   it('returns internal_error for unknown fetcher ids', async () => {
-    const outcome = await runFetcher(defaultFetcherRegistry, 'home-http', invocation());
-    expect(outcome).toMatchObject({ ok: false, failureClass: 'internal_error', message: 'unknown fetcherId: home-http' });
+    const outcome = await runFetcher(defaultFetcherRegistry, 'nope-http', invocation());
+    expect(outcome).toMatchObject({ ok: false, failureClass: 'internal_error', message: 'unknown fetcherId: nope-http' });
   });
 
   it('converts a throwing implementation into internal_error', async () => {

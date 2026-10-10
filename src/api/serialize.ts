@@ -146,6 +146,7 @@ export function serializeCheckAttempt(row: CheckAttemptRow) {
     duration_ms: row.durationMs,
     snapshot_id: row.snapshotId,
     error_message: row.errorMessage,
+    executor_job_id: row.executorJobId,
     started_at: row.startedAt,
     finished_at: row.finishedAt,
     created_at: row.createdAt,

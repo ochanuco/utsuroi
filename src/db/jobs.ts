@@ -34,6 +34,7 @@ function mapAttemptRow(row: Record<string, unknown>): CheckAttemptRow {
     durationMs: (row.duration_ms as number | null) ?? null,
     snapshotId: (row.snapshot_id as string | null) ?? null,
     errorMessage: (row.error_message as string | null) ?? null,
+    executorJobId: (row.executor_job_id as string | null) ?? null,
     startedAt: row.started_at as string,
     finishedAt: (row.finished_at as string | null) ?? null,
     createdAt: row.created_at as string,
@@ -127,8 +128,8 @@ export async function createCheckAttempt(
   await db
     .prepare(
       `INSERT INTO check_attempts
-        (id, check_job_id, target_id, fetcher_id, attempt_index, outcome, failure_class, status_code, duration_ms, snapshot_id, error_message, started_at, finished_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (id, check_job_id, target_id, fetcher_id, attempt_index, outcome, failure_class, status_code, duration_ms, snapshot_id, error_message, executor_job_id, started_at, finished_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       id,
@@ -142,6 +143,7 @@ export async function createCheckAttempt(
       input.durationMs ?? null,
       input.snapshotId ?? null,
       input.errorMessage ?? null,
+      input.executorJobId ?? null,
       startedAt,
       input.finishedAt ?? null,
       now
@@ -159,6 +161,7 @@ export async function createCheckAttempt(
     durationMs: input.durationMs ?? null,
     snapshotId: input.snapshotId ?? null,
     errorMessage: input.errorMessage ?? null,
+    executorJobId: input.executorJobId ?? null,
     startedAt,
     finishedAt: input.finishedAt ?? null,
     createdAt: now,

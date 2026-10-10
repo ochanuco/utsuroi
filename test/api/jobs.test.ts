@@ -54,6 +54,7 @@ describe('GET /api/jobs/:id/attempts', () => {
     expect(res.status).toBe(200);
     const body = await res.json() as any;
     expect(body.items).toHaveLength(3);
+    expect(body.items[0]).toHaveProperty('executor_job_id', null);
     expect(body.total).toBe(7);
 
     const secondPageRes = await app.request(

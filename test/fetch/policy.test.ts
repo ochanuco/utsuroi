@@ -105,6 +105,23 @@ describe('validateFetcherPolicy', () => {
   });
 });
 
+describe('runFetchSequence isRetryable', () => {
+  it('does not retry a fetcher that opts out, even for network_error', async () => {
+    const calls: string[] = [];
+    const fail: FetchOutcome = { ok: false, failureClass: 'network_error', status: null, message: 'x', retryAfterSeconds: null };
+    const result = await runFetchSequence(
+      { allowList: ['pull', 'push'], orderList: [{ fetcherId: 'pull' }, { fetcherId: 'push' }] },
+      async (id) => {
+        calls.push(id);
+        return fail;
+      },
+      { sleep: async () => undefined, isRetryable: (id) => id !== 'pull' },
+    );
+    expect(calls).toEqual(['pull', 'push', 'push', 'push']);
+    expect(result.attempts).toHaveLength(4);
+  });
+});
+
 describe('executor_unavailable', () => {
   it('is not an in-entry retry target', () => {
     expect(TRANSIENT_RETRY_FAILURE_CLASSES).not.toContain('executor_unavailable');

@@ -3,10 +3,17 @@
  * Page の Source URL、Feed/Sitemap の Source URL、Sitemap Index の子 Sitemap URL のいずれからも使う。
  */
 import { defaultFetcherRegistry, runFetcher, runFetchSequence } from '../fetch';
+import { PULL_FETCHER_IDS } from '../fetch/registry';
 import { createCheckAttempt } from '../db';
 import { checkUrlForSsrf } from '../net';
+import { failure } from '../fetch/http';
 import type { FetchOutcome } from '../shared/contracts';
 import type { CheckContext } from './types';
+
+/** 1 チェックで pull 型 Fetcher の待ちに使ってよい合計 (HostObject の lease TTL 60 秒に収める) */
+export const PULL_WAIT_BUDGET_MS = 55_000;
+/** これ未満しか残っていなければ pull 型 Fetcher へ投入しない */
+const MIN_PULL_WAIT_MS = 5_000;
 
 export interface FetchTargetResult {
   outcome: FetchOutcome;
@@ -29,15 +36,29 @@ export async function fetchTargetThroughPolicy(
   const executeFetcher = async (fetcherId: string): Promise<FetchOutcome> => {
     const index = attemptIndex++;
 
-    const outcome = await runFetcher(defaultFetcherRegistry, fetcherId, {
-      url,
-      userAgent: ctx.env.USER_AGENT,
-      etag: conditional.etag,
-      lastModified: conditional.lastModified,
-      env: ctx.env,
-      fetchImpl: ctx.fetchImpl,
-      urlGuard: checkUrlForSsrf,
-    });
+    const unavailable = (ctx.unavailableFetchers ??= new Set<string>());
+    const jobRef: { executorJobId?: string } = {};
+    const isPull = PULL_FETCHER_IDS.has(fetcherId);
+    const remaining = PULL_WAIT_BUDGET_MS - (ctx.pullWaitUsedMs ?? 0);
+    const leaseWaitMs = Math.min(10_000, Math.floor(remaining / 5));
+    const pullStart = Date.now();
+    const outcome = unavailable.has(fetcherId)
+      ? failure('executor_unavailable', null, `${fetcherId}: executor was unavailable earlier in this check`, null)
+      : isPull && remaining < MIN_PULL_WAIT_MS
+        ? failure('executor_unavailable', null, `${fetcherId}: wait budget for this check is exhausted`, null)
+        : await runFetcher(defaultFetcherRegistry, fetcherId, {
+          url,
+          userAgent: ctx.env.USER_AGENT,
+          etag: conditional.etag,
+          lastModified: conditional.lastModified,
+          env: ctx.env,
+          fetchImpl: ctx.fetchImpl,
+          urlGuard: checkUrlForSsrf,
+          jobRef,
+          submitLimits: isPull ? { leaseWaitMs, resultWaitMs: Math.min(40_000, remaining - leaseWaitMs) } : undefined,
+        });
+    if (isPull) ctx.pullWaitUsedMs = (ctx.pullWaitUsedMs ?? 0) + (Date.now() - pullStart);
+    if (!outcome.ok && outcome.failureClass === 'executor_unavailable') unavailable.add(fetcherId);
 
     const attemptId = crypto.randomUUID();
     lastAttemptId = attemptId;
@@ -52,11 +73,12 @@ export async function fetchTargetThroughPolicy(
       statusCode: outcome.status,
       durationMs: outcome.ok ? outcome.durationMs : null,
       errorMessage: outcome.ok ? null : outcome.message,
+      executorJobId: jobRef.executorJobId ?? null,
     });
 
     return outcome;
   };
 
-  const result = await runFetchSequence(ctx.policy, executeFetcher);
+  const result = await runFetchSequence(ctx.policy, executeFetcher, { isRetryable: (id) => !PULL_FETCHER_IDS.has(id) });
   return { outcome: result.outcome, lastAttemptId };
 }

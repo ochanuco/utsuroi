@@ -149,6 +149,8 @@ export async function runFetchSequence(
     maxAttempts?: number;
     transientRetries?: number;
     retryBackoffMs?: number;
+    /** false を返す fetcher はエントリ内リトライしない (pull 型は 1 回の待ちが長く HostObject の lease TTL を超えうるため) */
+    isRetryable?: (fetcherId: string) => boolean;
     sleep?: (ms: number) => Promise<void>;
   }
 ): Promise<FetchSequenceResult> {
@@ -173,6 +175,7 @@ export async function runFetchSequence(
     while (
       !outcome.ok &&
       retryAttemptNumber < transientRetries &&
+      (opts?.isRetryable?.(entry.fetcherId) ?? true) &&
       TRANSIENT_RETRY_FAILURE_CLASSES.includes(outcome.failureClass)
     ) {
       retryAttemptNumber += 1;
