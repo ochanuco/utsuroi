@@ -5,6 +5,7 @@
 import { defaultFetcherRegistry, runFetcher, runFetchSequence } from '../fetch';
 import { createCheckAttempt } from '../db';
 import { checkUrlForSsrf } from '../net';
+import { failure } from '../fetch/http';
 import type { FetchOutcome } from '../shared/contracts';
 import type { CheckContext } from './types';
 
@@ -29,15 +30,21 @@ export async function fetchTargetThroughPolicy(
   const executeFetcher = async (fetcherId: string): Promise<FetchOutcome> => {
     const index = attemptIndex++;
 
-    const outcome = await runFetcher(defaultFetcherRegistry, fetcherId, {
-      url,
-      userAgent: ctx.env.USER_AGENT,
-      etag: conditional.etag,
-      lastModified: conditional.lastModified,
-      env: ctx.env,
-      fetchImpl: ctx.fetchImpl,
-      urlGuard: checkUrlForSsrf,
-    });
+    const unavailable = (ctx.unavailableFetchers ??= new Set<string>());
+    const jobRef: { executorJobId?: string } = {};
+    const outcome = unavailable.has(fetcherId)
+      ? failure('executor_unavailable', null, `${fetcherId}: executor was unavailable earlier in this check`, null)
+      : await runFetcher(defaultFetcherRegistry, fetcherId, {
+          url,
+          userAgent: ctx.env.USER_AGENT,
+          etag: conditional.etag,
+          lastModified: conditional.lastModified,
+          env: ctx.env,
+          fetchImpl: ctx.fetchImpl,
+          urlGuard: checkUrlForSsrf,
+          jobRef,
+        });
+    if (!outcome.ok && outcome.failureClass === 'executor_unavailable') unavailable.add(fetcherId);
 
     const attemptId = crypto.randomUUID();
     lastAttemptId = attemptId;
@@ -52,6 +59,7 @@ export async function fetchTargetThroughPolicy(
       statusCode: outcome.status,
       durationMs: outcome.ok ? outcome.durationMs : null,
       errorMessage: outcome.ok ? null : outcome.message,
+      executorJobId: jobRef.executorJobId ?? null,
     });
 
     return outcome;

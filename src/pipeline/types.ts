@@ -47,5 +47,7 @@ export interface CheckContext {
   changeIds: string[];
   /** チェック全体で共有する title enrich (enrichTitle.ts) のフェッチ消費数。省略時は未使用 (0扱い) */
   titleFetchesUsed?: number;
+  /** このチェックの中で executor_unavailable になった Fetcher。以降の取得では投入せず即失敗させる (ADR-0023 §1)。省略時は空 */
+  unavailableFetchers?: Set<string>;
 }
 

@@ -4,7 +4,7 @@
  * を行って応答を base64 で返す。応答は cf-http と同じ分類器 (handleTerminalResponse) に通す。
  */
 import { DEFAULT_FETCH_LIMITS } from '../shared/contracts';
-import type { FetchOutcome } from '../shared/contracts';
+import type { FetchLimits, FetchOutcome } from '../shared/contracts';
 import type { FailureClass } from '../shared/types';
 import { signExecutorToken } from './executorToken';
 import { classifyNetworkError, failure, handleTerminalResponse, readBodyWithLimit } from './http';
@@ -135,17 +135,32 @@ export async function gcpHttpFetch(inv: FetcherInvocation): Promise<FetchOutcome
     return failure('internal_error', null, 'gcp executor returned an unexpected payload', null);
   }
 
+  return outcomeFromExecutorPayload(payload, inv, limits, startedAt, { label: 'gcp executor', prefix: 'gcp-http' });
+}
+
+/**
+ * Executor (GCP / Home Runner) が返す `kind: "response" | "error"` の本文を FetchOutcome へ解釈する。
+ * kind='response' は cf-http と同じ分類器 (handleTerminalResponse) に通す。
+ */
+export async function outcomeFromExecutorPayload(
+  payload: Record<string, unknown>,
+  inv: Pick<FetcherInvocation, 'url' | 'userAgent'>,
+  limits: FetchLimits,
+  startedAt: number,
+  names: { label: string; prefix: string },
+  finalUrlGuard?: (url: string) => { allowed: boolean; reason: string | null },
+): Promise<FetchOutcome> {
   if (payload.kind === 'error') {
     const failureClass = typeof payload.failureClass === 'string' ? payload.failureClass : '';
-    const message = typeof payload.message === 'string' ? payload.message : 'gcp executor reported a failure';
+    const message = typeof payload.message === 'string' ? payload.message : `${names.label} reported a failure`;
     if (!EXECUTOR_FAILURE_CLASSES.has(failureClass)) {
-      return failure('internal_error', null, `gcp executor returned unknown failure class: ${failureClass}`, null);
+      return failure('internal_error', null, `${names.label} returned unknown failure class: ${failureClass}`, null);
     }
-    return failure(failureClass as FailureClass, null, `gcp-http: ${message}`, null);
+    return failure(failureClass as FailureClass, null, `${names.prefix}: ${message}`, null);
   }
 
   if (payload.kind !== 'response') {
-    return failure('internal_error', null, 'gcp executor returned an unexpected payload', null);
+    return failure('internal_error', null, `${names.label} returned an unexpected payload`, null);
   }
   const { status, url: finalUrl, headers: upstreamHeaders, body: bodyBase64, truncated } = payload;
   if (
@@ -158,7 +173,13 @@ export async function gcpHttpFetch(inv: FetcherInvocation): Promise<FetchOutcome
     typeof bodyBase64 !== 'string' ||
     typeof truncated !== 'boolean'
   ) {
-    return failure('internal_error', null, 'gcp executor returned a malformed response', null);
+    return failure('internal_error', null, `${names.label} returned a malformed response`, null);
+  }
+  if (finalUrlGuard) {
+    const guard = finalUrlGuard(finalUrl);
+    if (!guard.allowed) {
+      return failure('ssrf_blocked', null, `final url blocked by ssrf policy: ${guard.reason ?? 'unknown'}`, null);
+    }
   }
 
   // cf-http は 2xx と 403 の本文を上限まで読み、超過すれば too_large にする。同じ扱いに揃える。
@@ -167,7 +188,7 @@ export async function gcpHttpFetch(inv: FetcherInvocation): Promise<FetchOutcome
   }
   const upstreamBody = decodeBase64(bodyBase64);
   if (upstreamBody === null) {
-    return failure('internal_error', null, 'gcp executor returned an invalid body encoding', null);
+    return failure('internal_error', null, `${names.label} returned an invalid body encoding`, null);
   }
 
   const syntheticHeaders = new Headers();

@@ -6,6 +6,7 @@
 import type { FetchOutcome } from '../shared/contracts';
 import type { Env } from '../shared/env';
 import { gcpHttpFetch } from './gcpHttp';
+import { homeHttpFetch } from './homeHttp';
 import { failure, httpFetch } from './http';
 
 export interface FetcherInvocation {
@@ -20,6 +21,15 @@ export interface FetcherInvocation {
   fetchImpl?: typeof fetch;
   /** 取得する URL (リダイレクト各ホップを含む) の SSRF 検査 */
   urlGuard: (url: string) => { allowed: boolean; reason: string | null };
+  /**
+   * pull 型 Fetcher が発行した Executor 側の job id を呼び出し元へ返すための参照。
+   * check_attempts.executor_job_id に記録し、Worker ログの job と突き合わせる (ADR-0023 §7)。
+   */
+  jobRef?: { executorJobId?: string };
+  /** pull 型 Fetcher の待機上限のテスト用上書き */
+  submitLimits?: import('../do/crawlerObject').SubmitLimits;
+  /** home-http の投入前 DNS 検査 (resolveAndCheck) に使う resolver。テスト用 */
+  ssrfResolver?: import('../net').DnsResolver;
 }
 
 /** 失敗は FetchOutcome で返す。例外を投げた場合は呼び出し側が internal_error に変換する */
@@ -37,6 +47,7 @@ const cfHttp: FetcherImplementation = (inv) =>
 export const defaultFetcherRegistry: FetcherRegistry = new Map<string, FetcherImplementation>([
   ['cf-http', cfHttp],
   ['gcp-http', gcpHttpFetch],
+  ['home-http', homeHttpFetch],
 ]);
 
 export async function runFetcher(
