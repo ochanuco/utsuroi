@@ -46,7 +46,7 @@
     "ACCESS_TEAM_DOMAIN": "chanuco.cloudflareaccess.com",
     "ACCESS_AUD": "0fc1d5919ae7e43b02ade17285ca5dab6b49c9a6b91acb9dc529464833422be7",
     // GCP Executor (ADR-0021)。空の間は gcp-http fetcher が internal_error を返す。
-    "GCP_EXECUTOR_URL": "",
+    "GCP_EXECUTOR_URL": "https://utsuroi-gcp-http-y3actxwvhq-an.a.run.app",
     "ACCESS_CALLERS": "{\"abf9c4f9f31104d59dbb7c49468de6e4.access\":\"runner-home\"}",
     // bot UA だと WAF に 503 で弾かれるサイト (SUUMO 等) があるため、当面はブラウザ相当の
     // UA を全 fetch 共通で使う。robots.txt 評価も同じ UA で行うため '*' グループにマッチする
