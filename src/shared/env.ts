@@ -6,6 +6,7 @@ export interface Env {
   NOTIFY_QUEUE: Queue<NotifyQueueMessage>;
   MONITOR_DO: DurableObjectNamespace;
   HOST_DO: DurableObjectNamespace;
+  CRAWLER_DO: DurableObjectNamespace;
   USER_AGENT: string;
   /** Cloudflare Access のチームドメイン (例: example.cloudflareaccess.com)。JWKS と iss の検証に使う */
   ACCESS_TEAM_DOMAIN: string;
@@ -35,4 +36,10 @@ export interface Env {
    * 未設定・不正な JSON の間は全 RPC 呼び出しを拒否する。
    */
   RPC_CALLERS?: string;
+  /**
+   * サービストークンの呼び出し元名 -> executor id の JSON オブジェクト (例: {"runner-home":"home"})。
+   * ここに載った `token:<name>` だけが /api/runner/* を使え、それ以外の /api/* は 403 になる (ADR-0023 §4)。
+   * 空・不正な JSON の間は /api/runner/* が全員 403 で、home-http は executor_unavailable になる。
+   */
+  RUNNER_EXECUTORS: string;
 }

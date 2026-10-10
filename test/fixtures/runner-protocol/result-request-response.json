@@ -1,0 +1,13 @@
+{
+  "leaseToken": "q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c",
+  "result": {
+    "kind": "response",
+    "status": 200,
+    "url": "https://example.com/feed.xml",
+    "contentType": "application/rss+xml",
+    "headers": { "content-type": "application/rss+xml", "etag": "\"abc\"" },
+    "body": "PHJzcy8+",
+    "truncated": false,
+    "durationMs": 812
+  }
+}
