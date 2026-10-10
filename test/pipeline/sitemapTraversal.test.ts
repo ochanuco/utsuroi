@@ -400,7 +400,7 @@ describe('runMonitorCheck: Sitemap Traversal real-URL lastmod update detection',
       (c) => c.targetUrl === 'https://example.com/posts/x' && c.kind === 'updated',
     );
     expect(updatedChange).toBeTruthy();
-  });
+  }, 90_000); // urlset を上限まで処理するため、CI のランナーでは既定の 20 秒に収まらない
 });
 
 describe('runMonitorCheck: Sitemap Traversal lastmod cutoff', () => {
