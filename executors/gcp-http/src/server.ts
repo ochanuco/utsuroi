@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { AuthError, JtiCache, parsePublicKey, verifyRequestToken } from './jwt.ts';
-import { FetchFailure, createFetchService } from './fetcher.ts';
-import type { FetchService } from './fetcher.ts';
+import { FetchFailure, createFetchService } from '../../shared/src/fetcher.ts';
+import type { FetchService } from '../../shared/src/fetcher.ts';
 import type { KeyObject } from 'node:crypto';
 
 const MAX_REQUEST_BODY_BYTES = 16 * 1024;

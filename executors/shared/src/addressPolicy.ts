@@ -42,10 +42,33 @@ const V6_RANGES: Array<[string, number]> = [
 ];
 for (const [net, prefix] of V6_RANGES) blockedV6.addSubnet(net, prefix, 'ipv6');
 
-export function isBlockedAddress(address: string): boolean {
+/** 組み込みの拒否範囲に加えて拒否する CIDR (例: 宅内ネットワークの公開アドレス) */
+export interface ExtraBlockList {
+  v4: BlockList;
+  v6: BlockList;
+}
+
+/** `10.0.0.0/8, 2001:db8::/32` のようなカンマ・空白区切りの CIDR 列を解釈する。不正な要素があれば例外 */
+export function parseCidrList(text: string): ExtraBlockList {
+  const extra: ExtraBlockList = { v4: new BlockList(), v6: new BlockList() };
+  for (const entry of text.split(/[\s,]+/).filter((e) => e !== '')) {
+    const [network, prefixText, ...rest] = entry.split('/');
+    const family = network === undefined ? 0 : isIP(network);
+    const prefix = prefixText === undefined || !/^\d{1,3}$/.test(prefixText) ? NaN : Number(prefixText);
+    if (family === 0 || rest.length > 0 || !Number.isInteger(prefix) || prefix > (family === 4 ? 32 : 128)) {
+      throw new Error(`invalid CIDR: ${entry}`);
+    }
+    if (family === 4) extra.v4.addSubnet(network as string, prefix, 'ipv4');
+    else extra.v6.addSubnet(network as string, prefix, 'ipv6');
+  }
+  return extra;
+}
+
+export function isBlockedAddress(address: string, extra?: ExtraBlockList): boolean {
   const family = isIP(address);
   if (family === 0) return true;
-  return family === 4 ? blockedV4.check(address, 'ipv4') : blockedV6.check(address, 'ipv6');
+  if (family === 4) return blockedV4.check(address, 'ipv4') || (extra?.v4.check(address, 'ipv4') ?? false);
+  return blockedV6.check(address, 'ipv6') || (extra?.v6.check(address, 'ipv6') ?? false);
 }
 
 const BLOCKED_HOST_SUFFIXES = ['.localhost', '.local', '.internal', '.localdomain', '.home.arpa'];

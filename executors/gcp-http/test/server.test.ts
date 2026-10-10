@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { after, before, test } from 'node:test';
-import { createFetchService } from '../src/fetcher.ts';
+import { createFetchService } from '../../shared/src/fetcher.ts';
 import { createServer } from '../src/server.ts';
 import { generateKeys, makeToken } from './helpers.ts';
 

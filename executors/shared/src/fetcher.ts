@@ -29,6 +29,10 @@ export interface FetchServiceOptions {
   resolve?: (hostname: string) => Promise<ResolvedAddress[]>;
   isBlockedAddress?: (address: string) => boolean;
   allowedPorts?: ReadonlySet<number>;
+  /** User-Agent の既定値 (リクエストの user-agent ヘッダがあればそちらを使う) */
+  userAgent?: string;
+  /** false なら IPv6 の解決結果へは接続しない (拒否判定は IPv6 も含めて行う)。既定は true */
+  allowIpv6?: boolean;
 }
 
 export interface FetchInput {
@@ -116,6 +120,7 @@ export function createFetchService(options: FetchServiceOptions) {
   const resolve = options.resolve ?? defaultResolve;
   const blockedAddress = options.isBlockedAddress ?? isBlockedAddress;
   const allowedPorts = options.allowedPorts ?? DEFAULT_ALLOWED_PORTS;
+  const allowIpv6 = options.allowIpv6 ?? true;
 
   /** URL を検査し、接続に使う検証済みアドレスを 1 つ返す (接続はそのアドレスへ固定する) */
   async function vet(url: URL): Promise<ResolvedAddress> {
@@ -142,7 +147,9 @@ export function createFetchService(options: FetchServiceOptions) {
     // 1 つでも拒否対象を含む名前は使わない (解決結果の取捨選択で迂回されないように)。
     if (addresses.some((a) => blockedAddress(a.address))) throw new FetchFailure('ssrf_blocked', 'resolved address not allowed');
     // Cloud Run は既定で IPv6 で外に出られないので、A レコードがあれば優先する
-    return (addresses.find((a) => a.family === 4) ?? addresses[0]) as ResolvedAddress;
+    const usable = allowIpv6 ? addresses : addresses.filter((a) => a.family === 4);
+    if (usable.length === 0) throw new FetchFailure('network_error', 'no usable address (ipv6 disabled)');
+    return (usable.find((a) => a.family === 4) ?? usable[0]) as ResolvedAddress;
   }
 
   async function hop(
@@ -219,7 +226,7 @@ export function createFetchService(options: FetchServiceOptions) {
     if (input.url.length > MAX_URL_LENGTH) throw new FetchFailure('ssrf_blocked', 'url too long');
     const maxBytes = Math.min(input.maxBytes, options.maxBytesCap);
     const headers = {
-      'user-agent': 'utsuroi-gcp-http',
+      'user-agent': options.userAgent ?? 'utsuroi-gcp-http',
       ...sanitizeRequestHeaders(input.headers),
     };
 
