@@ -322,7 +322,7 @@ describe('runMonitorCheck: Sitemap Traversal does not advance a child watermark 
       warnSpy3.mockRestore();
     }
     expect(run3Calls.some((u) => u.includes('child-trunc.xml'))).toBe(true);
-  }, 20_000); // 2001件のurlsetをprocessFeedItemsに2回通すため既定の5秒テストタイムアウトでは不足する
+  }, 90_000); // 2001件のurlsetをprocessFeedItemsに2回通すため既定の5秒では足りず、CI のランナーでは 20 秒でも足りない
 });
 
 describe('runMonitorCheck: Sitemap Traversal real-URL lastmod update detection', () => {
@@ -400,7 +400,7 @@ describe('runMonitorCheck: Sitemap Traversal real-URL lastmod update detection',
       (c) => c.targetUrl === 'https://example.com/posts/x' && c.kind === 'updated',
     );
     expect(updatedChange).toBeTruthy();
-  }, 90_000); // urlset を上限まで処理するため、CI のランナーでは既定の 20 秒に収まらない
+  });
 });
 
 describe('runMonitorCheck: Sitemap Traversal lastmod cutoff', () => {
