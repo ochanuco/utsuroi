@@ -107,6 +107,32 @@ describe('HostObject (SPEC §11: per-origin rate limit / lease / backoff / circu
     expect(tooSoon.granted).toBe(false);
   });
 
+  it('executor_unavailable neither backs off nor trips the circuit breaker, and does not reset an existing streak', async () => {
+    const stub = getStub('https://executor-unavailable.example');
+    let t = 9_000_000;
+    for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD + 2; i++) {
+      t += MIN_ACCESS_INTERVAL_MS;
+      await withClock(stub, t);
+      const lease = await stub.acquireLease();
+      expect(lease.granted).toBe(true);
+      await stub.releaseLease(lease.leaseId!, { failureClass: 'executor_unavailable', retryAfterSeconds: null });
+    }
+    t += MIN_ACCESS_INTERVAL_MS;
+    await withClock(stub, t);
+    const next = await stub.acquireLease();
+    expect(next.granted).toBe(true);
+
+    await stub.releaseLease(next.leaseId!, { failureClass: 'http_5xx', retryAfterSeconds: null });
+    t += 10 * 60_000;
+    await withClock(stub, t);
+    const l2 = await stub.acquireLease();
+    await stub.releaseLease(l2.leaseId!, { failureClass: 'executor_unavailable', retryAfterSeconds: null });
+    await runInDurableObject(stub, async (instance) => {
+      const st = await (instance as unknown as { loadState(): Promise<{ failureStreak: number }> }).loadState();
+      expect(st.failureStreak).toBe(1);
+    });
+  });
+
   describe('half-open circuit breaker probe', () => {
     async function tripBreaker(stub: DurableObjectStub<HostObject>, startT: number): Promise<number> {
       let t = startT;

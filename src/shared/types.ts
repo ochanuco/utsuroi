@@ -27,7 +27,8 @@ export type FailureClass =
   | 'captcha_challenge'
   | 'invalid_content_type'
   | 'parse_error'
-  | 'internal_error';
+  | 'internal_error'
+  | 'executor_unavailable'; // 実行基盤 (Home Runner 等) の不在・期限切れ。取得先 host の失敗ではない (ADR-0023)
 
 /**
  * 既定で OrderList の次候補へ進んでよい失敗分類。
@@ -39,6 +40,7 @@ export const DEFAULT_PROCEEDABLE_FAILURES: readonly FailureClass[] = [
   'network_error',
   'timeout',
   'http_5xx',
+  'executor_unavailable',
 ];
 
 /** 設定によらず後続 Fetcher へ進んではならない失敗分類 */
