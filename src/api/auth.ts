@@ -99,8 +99,9 @@ export function createAccessAuth(opts: AccessAuthOptions = {}): MiddlewareHandle
     if (inflight) return inflight;
     inflight = (async () => {
       lastRefetchAt = now();
-      const res = await (opts.fetchImpl ?? fetch)(`https://${teamDomain}/cdn-cgi/access/certs`, { redirect: 'error' });
-      if (!res.ok) throw new Error(`jwks: http ${res.status}`);
+      // Workers の fetch は redirect: 'error' を受け付けない。manual にして 3xx も失敗として扱い、別ホストへ辿らない
+      const res = await (opts.fetchImpl ?? fetch)(`https://${teamDomain}/cdn-cgi/access/certs`, { redirect: 'manual' });
+      if (res.status !== 200) throw new Error(`jwks: http ${res.status}`);
       const keys = await importJwks(await res.json());
       cache = { keys, fetchedAt: now(), teamDomain };
       return cache;
