@@ -13,6 +13,8 @@ export interface FetcherInvocation {
   userAgent: string;
   etag: string | null;
   lastModified: string | null;
+  /** 追加で送る request header (user-agent 以外)。cf-http のみ反映する */
+  headers?: Record<string, string>;
   env: Env;
   /** テスト用の fetch 差し替え */
   fetchImpl?: typeof fetch;
@@ -27,7 +29,7 @@ export type FetcherRegistry = ReadonlyMap<string, FetcherImplementation>;
 
 const cfHttp: FetcherImplementation = (inv) =>
   httpFetch(
-    { url: inv.url, userAgent: inv.userAgent, etag: inv.etag, lastModified: inv.lastModified },
+    { url: inv.url, userAgent: inv.userAgent, headers: inv.headers, etag: inv.etag, lastModified: inv.lastModified },
     // リダイレクト各ホップで URL を再検証する (SPEC §15)。
     { fetch: inv.fetchImpl, urlGuard: inv.urlGuard },
   );

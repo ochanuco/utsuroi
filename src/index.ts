@@ -8,6 +8,8 @@ import { runReconciliation } from './pipeline/reconcile';
 
 export { MonitorObject, monitorControlFactory } from './do/monitorObject';
 export { HostObject, hostLimiterFactory } from './do/hostObject';
+export { FetchEntrypoint } from './rpc/entrypoint';
+export type { FetchPageRequest, FetchPageResult } from './rpc/fetchPage';
 
 /** Cloudflare Queues の MessageBatch を notify バッチ層の最小 interface へ変換する薄いアダプタ */
 function toNotifyMessageBatch(batch: MessageBatch<NotifyQueueMessage>): NotifyMessageBatch {

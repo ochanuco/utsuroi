@@ -29,4 +29,10 @@ export interface Env {
    * 公開鍵は Cloud Run 側の EXECUTOR_PUBLIC_KEY と対になる。
    */
   GCP_EXECUTOR_SIGNING_KEY?: string;
+  /**
+   * Service Binding 経由の RPC (FetchEntrypoint, ADR-0022) を許可する呼び出し元の設定 (wrangler secret)。
+   * JSON: { "<caller>": { "allowedHosts": string[], "fetchers": string[] } }。
+   * 未設定・不正な JSON の間は全 RPC 呼び出しを拒否する。
+   */
+  RPC_CALLERS?: string;
 }

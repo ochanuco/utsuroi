@@ -279,6 +279,7 @@ Cloud Run上のGCP Executorはpush型とし、CrawlerObjectの対象外とする
 ## 15. セキュリティ
 
 - 管理APIはCloudflare Accessが発行するJWTをWorker自身が検証して認可する。呼び出し元（人間のメールまたはサービストークン名）を監査用に識別する（ADR-0020）。
+- 同一アカウントの他WorkerからのFetch依頼は、管理APIとは別にService Binding RPC（`FetchEntrypoint.fetchPage`）で受ける。呼び出し元はbinding propsで識別し、許可ホストと使用Fetcherをsecret `RPC_CALLERS`で呼び出し元ごとに制限する（ADR-0022）。
 - AccessのAUDが未設定の間は全APIリクエストを拒否し、workers.devとプレビューURLは無効にする。
 - URL登録時と接続直前にSSRF検査を行う。
 - loopback、link-local、private、metadata endpointを既定拒否する。
