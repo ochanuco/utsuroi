@@ -1,66 +1,38 @@
-name: CI
+name: ci
 
 on:
   pull_request:
+    branches: [main]
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  worker:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 10.33.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm test
+  ci:
+    uses: ochanuco/.github/.github/workflows/pnpm.yml@e5102a8ff65b3c15a2afa263d4970dbbe6538862 # v1.1.0
+    with:
+      run: |
+        pnpm run typecheck
+        pnpm test
 
   gcp-executor:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: executors/gcp-http
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: executors/gcp-http/package-lock.json
-      - run: npm ci
-      - run: npm test
+    uses: ochanuco/.github/.github/workflows/pnpm.yml@e5102a8ff65b3c15a2afa263d4970dbbe6538862 # v1.1.0
+    with:
+      working-directory: executors/gcp-http
+      node-version: "22"
+      timeout-minutes: 10
+      run: pnpm test
 
   home-runner:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: executors/home-runner
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: executors/home-runner/package-lock.json
-      - run: npm ci
-      - run: npm test
+    uses: ochanuco/.github/.github/workflows/pnpm.yml@e5102a8ff65b3c15a2afa263d4970dbbe6538862 # v1.1.0
+    with:
+      working-directory: executors/home-runner
+      node-version: "22"
+      timeout-minutes: 10
+      run: pnpm test

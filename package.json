@@ -19,5 +19,6 @@
     "typecheck": "tsc --noEmit"
   },
   "type": "module",
-  "private": true
+  "private": true,
+  "packageManager": "pnpm@10.33.0"
 }
