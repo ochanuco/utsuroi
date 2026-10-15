@@ -28,6 +28,7 @@ beforeEach(() => {
   worker.maintenance = false;
   worker.forceStatus = null;
   worker.resultResponder = () => ({ status: 200, body: { accepted: true } });
+  worker.activeRunnerId = '';
   target.hits = 0;
 });
 
@@ -53,6 +54,7 @@ function makeRunner(overrides: Partial<RunnerOptions> = {}) {
     logger: logs.logger,
     ...overrides,
   });
+  worker.activeRunnerId = runner.runnerId;
   return { runner, logs };
 }
 
