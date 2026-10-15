@@ -28,6 +28,11 @@ export interface FakeWorker {
   /** /result への応答を差し替える。呼び出し回数 (1 始まり) を受け取る */
   resultResponder: (jobId: string, attempt: number) => { status: number; body?: unknown };
   forceStatus: number | null;
+  /**
+   * 設定すると、別の runnerId からの lease には job を渡さず、記録もしない。
+   * 前のテストで stop() が中断した lease が遅れて届き、次のテストの job を持っていくのを防ぐ
+   */
+  activeRunnerId: string | null;
   close(): Promise<void>;
 }
 
@@ -40,6 +45,7 @@ export async function startFakeWorker(): Promise<FakeWorker> {
     maintenance: false,
     resultResponder: () => ({ status: 200, body: { accepted: true } }),
     forceStatus: null,
+    activeRunnerId: null,
     close: () => closeServer(server),
   };
   const server = http.createServer(async (req, res) => {
@@ -47,11 +53,15 @@ export async function startFakeWorker(): Promise<FakeWorker> {
     for await (const c of req) chunks.push(c as Buffer);
     const body = chunks.length > 0 ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : null;
     const path = req.url ?? '';
-    worker.requests.push({ path, headers: req.headers, body });
     const send = (status: number, payload: unknown) => {
       const text = JSON.stringify(payload);
       res.writeHead(status, { 'content-type': 'application/json' }).end(text);
     };
+    if (path === '/api/runner/lease' && worker.activeRunnerId !== null && body?.runnerId !== worker.activeRunnerId) {
+      send(200, { jobs: [] });
+      return;
+    }
+    worker.requests.push({ path, headers: req.headers, body });
     if (worker.forceStatus !== null) {
       res.writeHead(worker.forceStatus).end();
       return;
